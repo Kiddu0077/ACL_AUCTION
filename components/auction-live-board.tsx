@@ -28,7 +28,12 @@ export function AuctionLiveBoard({
 }) {
   const [state, setState] = React.useState(initialState);
   const [players, setPlayers] = React.useState(initialPlayers);
-  const teams = initialTeams;
+  // Teams must be stateful too — admin can change budget/lock/squad_size
+  // mid-auction (bonus purse, deduct, reset, lock/unlock). Without this
+  // subscription, the public board shows a stale budget_total and the
+  // "remaining points" numbers drift out of sync from the cockpit.
+  const [teams, setTeams] = React.useState(initialTeams);
+  React.useEffect(() => setTeams(initialTeams), [initialTeams]);
 
   // SOLD celebration splash
   type SoldSplash = {
@@ -107,6 +112,25 @@ export function AuctionLiveBoard({
           } else if (payload.eventType === "DELETE" && payload.old) {
             const id = (payload.old as { id?: string }).id;
             if (id) setPlayers((prev) => prev.filter((p) => p.id !== id));
+          }
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "teams" },
+        (payload) => {
+          if (payload.eventType === "UPDATE" && payload.new) {
+            const u = payload.new as Team;
+            setTeams((prev) =>
+              prev.some((t) => t.id === u.id)
+                ? prev.map((t) => (t.id === u.id ? u : t))
+                : [...prev, u],
+            );
+          } else if (payload.eventType === "INSERT" && payload.new) {
+            setTeams((prev) => [...prev, payload.new as Team]);
+          } else if (payload.eventType === "DELETE" && payload.old) {
+            const id = (payload.old as { id?: string }).id;
+            if (id) setTeams((prev) => prev.filter((t) => t.id !== id));
           }
         },
       )
@@ -242,8 +266,8 @@ export function AuctionLiveBoard({
         </div>
       )}
 
-      {/* Main board — designed to fit a TV / laptop without scrolling */}
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1.75fr)_minmax(0,1fr)] lg:gap-4">
+      {/* Main board — h-full so it fills the flex-1 parent on any TV/monitor */}
+      <div className="grid h-full grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1.75fr)_minmax(0,1fr)] lg:gap-4">
         {/* ── LEFT — current player ─────────────────────────────────────── */}
         <div
           className="relative flex h-full flex-col overflow-hidden rounded-2xl border-2 border-secondary shadow-2xl"
@@ -289,44 +313,58 @@ export function AuctionLiveBoard({
                   <Image
                     src={currentPlayer.profile_picture_url}
                     alt={currentPlayer.full_name}
-                    width={400}
-                    height={400}
-                    className="relative aspect-square w-48 rounded-2xl border-4 border-secondary bg-white/10 object-contain shadow-2xl sm:w-56 md:w-64 lg:w-72 xl:w-80"
+                    width={600}
+                    height={600}
+                    className="relative aspect-square w-56 rounded-2xl border-4 border-secondary bg-white/10 object-contain shadow-2xl sm:w-72 md:w-80 lg:w-96 xl:w-[28rem] 2xl:w-[36rem]"
                     priority
                   />
                 ) : (
-                  <div className="relative flex aspect-square w-48 items-center justify-center rounded-2xl border-4 border-secondary bg-white/10 text-sm sm:w-56 md:w-64 lg:w-72 xl:w-80">
+                  <div className="relative flex aspect-square w-56 items-center justify-center rounded-2xl border-4 border-secondary bg-white/10 text-sm sm:w-72 md:w-80 lg:w-96 xl:w-[28rem] 2xl:w-[36rem]">
                     No photo
                   </div>
                 )}
               </div>
 
               <div className="min-w-0 flex-1 text-center md:text-left">
-                <p className="text-xs font-bold uppercase tracking-[0.3em] text-secondary sm:text-sm">
+                <p className="text-sm font-bold uppercase tracking-[0.3em] text-secondary sm:text-base md:text-lg">
                   {currentPlayer.role}
                 </p>
-                <h1 className="mt-2 break-words text-4xl font-black uppercase leading-[0.95] tracking-tight sm:text-5xl md:text-6xl lg:text-7xl xl:text-8xl">
+                <h1 className="mt-2 break-words text-5xl font-black uppercase leading-[0.95] tracking-tight sm:text-6xl md:text-7xl lg:text-8xl xl:text-[7rem] 2xl:text-[9rem]">
                   {currentPlayer.full_name}
                 </h1>
-                <p className="mt-3 text-base text-blue-100/90 sm:text-lg md:text-xl">
+                <p className="mt-3 text-lg text-blue-100/90 sm:text-xl md:text-2xl lg:text-3xl">
                   {currentPlayer.city}
                 </p>
                 {currentPlayer.is_icon && (
-                  <span className="mt-4 inline-block rounded-full bg-gradient-to-r from-yellow-400 to-amber-500 px-4 py-1.5 text-xs font-black uppercase text-cricket-pitch shadow-lg">
+                  <span className="mt-4 inline-block rounded-full bg-gradient-to-r from-yellow-400 to-amber-500 px-4 py-1.5 text-sm font-black uppercase text-cricket-pitch shadow-lg sm:text-base">
                     ★ Icon Player
                   </span>
                 )}
               </div>
             </div>
           ) : (
-            <div className="relative flex flex-1 flex-col items-center justify-center gap-3 p-10 text-center text-white">
-              <Trophy />
-              <p className="text-3xl font-black uppercase tracking-tight sm:text-4xl md:text-5xl">
-                Block is empty
-              </p>
-              <p className="text-base text-blue-100/80 sm:text-lg">
-                Next player coming up…
-              </p>
+            <div className="relative flex flex-1 flex-col items-center justify-center gap-6 overflow-hidden p-10 text-center text-white">
+              {/* Big animated trophy centerpiece */}
+              <div className="relative">
+                <div className="absolute inset-0 animate-ping rounded-full bg-secondary/20 blur-2xl" />
+                <div className="relative rounded-full bg-gradient-to-br from-secondary/30 to-transparent p-6 sm:p-10">
+                  <Trophy className="h-16 w-16 text-secondary sm:h-24 sm:w-24 md:h-32 md:w-32 lg:h-40 lg:w-40" />
+                </div>
+              </div>
+              <div className="space-y-3">
+                <p className="text-4xl font-black uppercase leading-tight tracking-wide text-white sm:text-5xl md:text-6xl lg:text-7xl xl:text-8xl">
+                  Ready for the next player
+                </p>
+                <p className="text-base uppercase tracking-[0.3em] text-secondary sm:text-lg md:text-xl">
+                  ● The auctioneer is picking ●
+                </p>
+              </div>
+              {/* Tricolor accent bars */}
+              <div className="mt-4 flex gap-2">
+                <span className="h-1.5 w-16 rounded-full bg-saffron sm:h-2 sm:w-20" />
+                <span className="h-1.5 w-16 rounded-full bg-white sm:h-2 sm:w-20" />
+                <span className="h-1.5 w-16 rounded-full bg-india-green sm:h-2 sm:w-20" />
+              </div>
             </div>
           )}
         </div>
@@ -399,16 +437,16 @@ export function AuctionLiveBoard({
   );
 }
 
-function Trophy() {
+function Trophy({ className }: { className?: string }) {
   return (
     <svg
       viewBox="0 0 24 24"
       fill="none"
-      stroke="#fbbf24"
-      strokeWidth="2"
+      stroke="currentColor"
+      strokeWidth="1.5"
       strokeLinecap="round"
       strokeLinejoin="round"
-      className="h-16 w-16 sm:h-20 sm:w-20"
+      className={className ?? "h-16 w-16 text-secondary sm:h-20 sm:w-20"}
       aria-hidden="true"
     >
       <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6" />

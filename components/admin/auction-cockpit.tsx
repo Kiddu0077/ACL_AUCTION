@@ -88,8 +88,8 @@ export function AuctionCockpit({
     setSalePrice(state.current_player_id ? String(state.base_price) : "");
     setSelectedTeamId(null);
     if (state.current_player_id) {
-      // Small delay so the input mounts before we focus it.
-      setTimeout(() => priceInputRef.current?.focus(), 50);
+      // Focus after the next paint — snappier than a setTimeout delay.
+      requestAnimationFrame(() => priceInputRef.current?.focus());
     }
   }, [state.current_player_id, state.base_price]);
 
@@ -548,11 +548,16 @@ export function AuctionCockpit({
                   Block is empty
                 </p>
                 <div className="flex flex-wrap justify-center gap-2">
+                  {/* Both buttons intentionally NOT disabled by `pending` —
+                      each action already applies its state change optimistically
+                      + broadcasts to public displays. A stale server write in
+                      flight from the previous SOLD/UNSOLD doesn't need to
+                      block the auctioneer from picking the next player. */}
                   <Button
                     variant="secondary"
                     size="lg"
                     onClick={doPickRandom}
-                    disabled={pending || fullPool.length === 0}
+                    disabled={fullPool.length === 0}
                   >
                     <Shuffle className="h-5 w-5" /> 🎲 Random pick (R)
                   </Button>
@@ -562,7 +567,6 @@ export function AuctionCockpit({
                       size="lg"
                       className="bg-white text-cricket-pitch hover:bg-white/90"
                       onClick={doRepoolUnsold}
-                      disabled={pending}
                     >
                       <RefreshCw className="h-5 w-5" /> Re-pool {unsoldCount}{" "}
                       unsold
@@ -717,7 +721,6 @@ export function AuctionCockpit({
                   size="sm"
                   variant="outline"
                   onClick={doRepoolUnsold}
-                  disabled={pending}
                   title="Bring unsold players back into the pool"
                 >
                   <RefreshCw className="h-4 w-4" /> Re-pool {unsoldCount}

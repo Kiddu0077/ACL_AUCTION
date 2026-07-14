@@ -56,6 +56,11 @@ const config: Config = {
           stump: "#fbbf24",
           field: "#15803d",
         },
+        // Indian tricolor + team-jersey palette for the ICL theme
+        saffron: "#FF9933",
+        "india-green": "#138808",
+        "chakra-blue": "#000080",
+        "india-jersey": "#0f4c81",
       },
       borderRadius: {
         lg: "var(--radius)",

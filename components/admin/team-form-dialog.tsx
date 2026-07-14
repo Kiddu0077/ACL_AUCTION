@@ -100,7 +100,7 @@ export function TeamFormDialog({
                 name="name"
                 required
                 defaultValue={team?.name ?? ""}
-                placeholder="e.g. Attapady Tigers"
+                placeholder="e.g. Independence Warriors"
               />
             </div>
             <div>

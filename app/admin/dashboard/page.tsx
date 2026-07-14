@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Gavel, Users } from "lucide-react";
+import { ExternalLink, Gavel, Layers, ShieldCheck, Users } from "lucide-react";
 
 import { Card, CardContent } from "@/components/ui/card";
 import { createClient } from "@/lib/supabase/server";
@@ -32,12 +32,7 @@ export default async function AdminDashboardPage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Link
-              href="/admin/teams"
-              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-input px-3 text-sm font-medium hover:bg-muted"
-            >
-              <Users className="h-4 w-4" /> Teams
-            </Link>
+            {/* Admin controls */}
             <Link
               href="/admin/auction"
               className="inline-flex h-9 items-center gap-1.5 rounded-md bg-cricket-pitch px-3 text-sm font-medium text-white hover:bg-cricket-pitch/90"
@@ -45,19 +40,45 @@ export default async function AdminDashboardPage() {
               <Gavel className="h-4 w-4" /> Auction
             </Link>
             <Link
-              href="/players"
-              target="_blank"
+              href="/admin/teams"
               className="inline-flex h-9 items-center gap-1.5 rounded-md border border-input px-3 text-sm font-medium hover:bg-muted"
             >
-              <Users className="h-4 w-4" /> Players
+              <ShieldCheck className="h-4 w-4" /> Teams
+            </Link>
+            <Link
+              href="/admin/squads"
+              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-input px-3 text-sm font-medium hover:bg-muted"
+            >
+              <Users className="h-4 w-4" /> Squad Mgmt
+            </Link>
+            <Link
+              href="/admin/pools"
+              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-input px-3 text-sm font-medium hover:bg-muted"
+            >
+              <Layers className="h-4 w-4" /> Pools
+            </Link>
+
+            {/* Separator */}
+            <span className="mx-1 hidden h-6 w-px bg-border sm:inline-block" />
+
+            {/* Public view links (open in new tab) */}
+            <Link
+              href="/players"
+              target="_blank"
+              className="inline-flex h-9 items-center gap-1 rounded-md border border-input px-2.5 text-xs text-muted-foreground hover:bg-muted"
+              title="Public players catalog (opens in new tab)"
+            >
+              Players <ExternalLink className="h-3 w-3" />
             </Link>
             <Link
               href="/teams"
               target="_blank"
-              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-input px-3 text-sm font-medium hover:bg-muted"
+              className="inline-flex h-9 items-center gap-1 rounded-md border border-input px-2.5 text-xs text-muted-foreground hover:bg-muted"
+              title="Public squads page (opens in new tab)"
             >
-              <Users className="h-4 w-4" /> Squads
+              Squads <ExternalLink className="h-3 w-3" />
             </Link>
+
             <ExportButtons players={players} />
             <SignOutButton />
           </div>

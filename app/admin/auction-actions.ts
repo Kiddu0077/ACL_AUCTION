@@ -515,6 +515,103 @@ export async function updateAuctionSettings(input: {
   return { error: null };
 }
 
+// ── Team pools (group-stage draw) ───────────────────────────────────────────
+// Server-side only: lists of teams pre-seeded into a specific pool every time
+// the "random" draw runs. The remaining slots in each pool are filled by a
+// Fisher-Yates shuffle. These lists live only in this server action — never
+// reach the client bundle or the public pools page.
+const FORCED_POOL_A = new Set(["sharkzz"]);
+const FORCED_POOL_B = new Set([
+  "royal strikers attapadi",
+  "agali strikers",
+  "asg",
+]);
+
+export async function generateRandomPools() {
+  if (!(await requireAuth())) return { error: "Not authenticated" };
+  const admin = createAdminClient();
+
+  const { data: teams, error: fetchErr } = await admin
+    .from("teams")
+    .select("id, name");
+  if (fetchErr) return { error: fetchErr.message };
+  if (!teams || teams.length === 0) return { error: "No teams to draw" };
+
+  const half = Math.ceil(teams.length / 2);
+  const norm = (s: string) => s.trim().toLowerCase();
+
+  // Bucket: forced to A, forced to B, up for grabs
+  const forcedA = teams.filter((t) => FORCED_POOL_A.has(norm(t.name)));
+  const forcedB = teams.filter((t) => FORCED_POOL_B.has(norm(t.name)));
+  const others = teams.filter(
+    (t) =>
+      !FORCED_POOL_A.has(norm(t.name)) && !FORCED_POOL_B.has(norm(t.name)),
+  );
+
+  // Fisher-Yates shuffle the "others"
+  for (let i = others.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [others[i], others[j]] = [others[j], others[i]];
+  }
+
+  // Fill remaining seats — Pool A first, then Pool B from what's left
+  const aSlots = Math.max(0, half - forcedA.length);
+  const bSlots = Math.max(0, half - forcedB.length);
+
+  const aFromOthers = others.slice(0, aSlots);
+  const bFromOthers = others.slice(aSlots, aSlots + bSlots);
+
+  const aIds = [...forcedA.map((t) => t.id), ...aFromOthers.map((t) => t.id)];
+  const bIds = [...forcedB.map((t) => t.id), ...bFromOthers.map((t) => t.id)];
+
+  if (aIds.length > 0) {
+    const { error } = await admin
+      .from("teams")
+      .update({ pool: "A" })
+      .in("id", aIds);
+    if (error) return { error: error.message };
+  }
+  if (bIds.length > 0) {
+    const { error } = await admin
+      .from("teams")
+      .update({ pool: "B" })
+      .in("id", bIds);
+    if (error) return { error: error.message };
+  }
+
+  revalidatePath("/admin/pools");
+  revalidatePath("/pools");
+  revalidatePath("/admin/teams");
+  return { error: null };
+}
+
+// Manual single-team move — admin-only, indistinguishable on the public page.
+export async function setTeamPool(teamId: string, pool: "A" | "B" | null) {
+  if (!(await requireAuth())) return { error: "Not authenticated" };
+  const supabase = createClient();
+  const { error } = await supabase
+    .from("teams")
+    .update({ pool })
+    .eq("id", teamId);
+  if (error) return { error: error.message };
+  revalidatePath("/admin/pools");
+  revalidatePath("/pools");
+  return { error: null };
+}
+
+export async function clearPools() {
+  if (!(await requireAuth())) return { error: "Not authenticated" };
+  const admin = createAdminClient();
+  const { error } = await admin
+    .from("teams")
+    .update({ pool: null })
+    .not("id", "is", null);
+  if (error) return { error: error.message };
+  revalidatePath("/admin/pools");
+  revalidatePath("/pools");
+  return { error: null };
+}
+
 // Wipe all sales and clear the block. Players go back to the unsold pool;
 // teams keep their budgets. ICON PLAYERS are preserved on their teams —
 // they're pre-assigned and shouldn't be wiped by a restart.

@@ -28,6 +28,8 @@ export type Player = {
   updated_at: string;
 };
 
+export type Pool = "A" | "B";
+
 export type Team = {
   id: string;
   name: string;
@@ -38,6 +40,7 @@ export type Team = {
   budget_total: number;
   is_locked: boolean;
   squad_size: number;
+  pool: Pool | null;
   created_at: string;
   updated_at: string;
 };
@@ -52,6 +55,7 @@ export type TeamInsert = {
   budget_total?: number;
   is_locked?: boolean;
   squad_size?: number;
+  pool?: Pool | null;
 };
 
 export type TeamUpdate = Partial<TeamInsert>;
