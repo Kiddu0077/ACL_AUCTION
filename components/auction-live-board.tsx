@@ -183,17 +183,6 @@ export function AuctionLiveBoard({
     return m;
   }, [players]);
 
-  // Three simple counters: total / sold / remaining
-  const totalPlayers = React.useMemo(
-    () => players.filter((p) => p.status !== "Rejected").length,
-    [players],
-  );
-  const soldPlayers = React.useMemo(
-    () => players.filter((p) => p.status !== "Rejected" && p.team_id).length,
-    [players],
-  );
-  const remainingPlayers = totalPlayers - soldPlayers;
-
   // Paused / ended overlay
   if (state.status === "paused" || state.status === "ended") {
     const ended = state.status === "ended";
@@ -300,7 +289,7 @@ export function AuctionLiveBoard({
           <div className="pointer-events-none absolute inset-0 opacity-[0.08] [background-image:radial-gradient(circle_at_2px_2px,white_1px,transparent_0)] [background-size:32px_32px]" />
           <div className="pointer-events-none absolute -right-32 -top-32 h-96 w-96 rounded-full bg-secondary/30 blur-3xl" />
 
-          {/* Status strip */}
+          {/* Status strip — just the live indicator + connection health */}
           <div className="relative flex flex-wrap items-center justify-between gap-2 border-b border-white/10 bg-black/30 px-4 py-2 text-white">
             <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] sm:text-sm">
               <span className="relative flex h-2.5 w-2.5">
@@ -309,20 +298,7 @@ export function AuctionLiveBoard({
               </span>
               <span>{currentPlayer ? "Auctioning Now" : "On Hold"}</span>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <ConnectionIndicator status={conn} />
-              <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider sm:gap-3 sm:text-xs">
-                <span className="text-blue-200/80">
-                  Total <span className="tabular-nums text-white">{totalPlayers}</span>
-                </span>
-                <span className="text-emerald-300/90">
-                  Sold <span className="tabular-nums text-white">{soldPlayers}</span>
-                </span>
-                <span className="text-yellow-200/90">
-                  Remaining <span className="tabular-nums text-white">{remainingPlayers}</span>
-                </span>
-              </div>
-            </div>
+            <ConnectionIndicator status={conn} />
           </div>
 
           {currentPlayer ? (
