@@ -28,6 +28,45 @@ export async function updatePlayerStatus(id: string, status: PlayerStatus) {
   return { error: null };
 }
 
+// Manually add a player from the admin dashboard — bypasses the public
+// /register form (which is closed). Uses the service-role client so the
+// row can be inserted with the "Verified" status directly, skipping the
+// anon RLS policy that limits inserts to status='Pending'.
+export async function adminAddPlayer(input: {
+  full_name: string;
+  role: "Batsman" | "Bowler" | "All-rounder";
+  phone?: string | null;
+  city: string;
+  profile_picture_url?: string | null;
+}) {
+  const user = await requireAuth();
+  if (!user) return { error: "Not authenticated" };
+
+  const name = input.full_name.trim();
+  const city = input.city.trim();
+  if (!name || !city) return { error: "Name and city are required" };
+
+  const admin = createAdminClient();
+  const { error } = await admin.from("players").insert({
+    full_name: name,
+    role: input.role,
+    city,
+    phone: input.phone?.trim() || null,
+    profile_picture_url: input.profile_picture_url ?? null,
+    is_icon: false,
+    status: "Verified",
+  });
+  if (error) {
+    if (error.code === "23505" || /phone/i.test(error.message)) {
+      return { error: "That phone number already belongs to another player." };
+    }
+    return { error: error.message };
+  }
+  revalidatePath("/admin/dashboard");
+  revalidatePath("/players");
+  return { error: null };
+}
+
 export async function updatePlayer(
   id: string,
   fields: {

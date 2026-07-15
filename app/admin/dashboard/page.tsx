@@ -3,6 +3,7 @@ import { ExternalLink, Gavel, Layers, ShieldCheck, Users } from "lucide-react";
 
 import { Card, CardContent } from "@/components/ui/card";
 import { createClient } from "@/lib/supabase/server";
+import { AddPlayerDialog } from "@/components/admin/add-player-dialog";
 import { ExportButtons } from "@/components/admin/export-buttons";
 import { PlayersTable } from "@/components/admin/players-table";
 import { SignOutButton } from "@/components/admin/signout-button";
@@ -79,6 +80,7 @@ export default async function AdminDashboardPage() {
               Squads <ExternalLink className="h-3 w-3" />
             </Link>
 
+            <AddPlayerDialog />
             <ExportButtons players={players} />
             <SignOutButton />
           </div>
