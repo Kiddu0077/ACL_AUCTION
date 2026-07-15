@@ -40,6 +40,7 @@ import {
 } from "@/app/admin/auction-actions";
 import { createClient } from "@/lib/supabase/browser";
 import { AUCTION_CHANNEL } from "@/lib/realtime/broadcast";
+import { broadcastReload } from "@/lib/realtime/broadcast-client";
 import {
   ConnectionIndicator,
   realtimeStatus,
@@ -437,6 +438,9 @@ export function AuctionCockpit({
           description: r.error,
         });
       } else {
+        // Bulk UPDATE — tell public displays to re-fetch (Realtime may
+        // rate-limit the burst of individual row events).
+        broadcastReload();
         toast({
           variant: "success",
           title: `${r.count} unsold player${r.count === 1 ? "" : "s"} back in the pool`,

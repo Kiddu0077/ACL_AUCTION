@@ -1,0 +1,12 @@
+# Netlify config for the ICL auction — backup deployment.
+# Auto-detects Next.js 14 App Router via the official plugin.
+
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# Same headers we implicitly rely on: Supabase Realtime uses WebSockets which
+# work by default on Netlify Edge; no extra config needed.

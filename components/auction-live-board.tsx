@@ -84,6 +84,26 @@ export function AuctionLiveBoard({
         if (splashTimer.current) clearTimeout(splashTimer.current);
         splashTimer.current = setTimeout(() => setSoldSplash(null), 2000);
       })
+      .on("broadcast", { event: "reload" }, async () => {
+        // Full re-fetch — after bulk mutations (Restart, Re-pool) where
+        // individual postgres_changes events may have been rate-limited.
+        try {
+          const [pRes, tRes, sRes] = await Promise.all([
+            supabase.from("players").select("*"),
+            supabase.from("teams").select("*").order("name"),
+            supabase
+              .from("auction_state")
+              .select("*")
+              .eq("id", "current")
+              .single(),
+          ]);
+          if (pRes.data) setPlayers(pRes.data as Player[]);
+          if (tRes.data) setTeams(tRes.data as Team[]);
+          if (sRes.data) setState(sRes.data as AuctionState);
+        } catch {
+          /* connection issue — will heal on next event */
+        }
+      })
       .subscribe((status) => {
         connBroadcast.current = realtimeStatus(status);
         mergeConn();

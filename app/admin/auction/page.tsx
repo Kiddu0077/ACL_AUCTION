@@ -57,7 +57,9 @@ export default async function AuctionAdminPage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {state && <AuctionLifecycle status={state.status} />}
+            {state && (
+              <AuctionLifecycle status={state.status} currentState={state} />
+            )}
             <Link
               href="/admin/squads"
               className="rounded-md border border-input px-3 py-2 text-sm hover:bg-muted"

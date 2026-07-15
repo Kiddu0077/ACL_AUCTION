@@ -7,6 +7,7 @@ import { Pause, Play, Square, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/use-toast";
 import { setAuctionStatus } from "@/app/admin/auction-actions";
+import { broadcastAuctionState } from "@/lib/realtime/broadcast-client";
 import type { AuctionStatus } from "@/lib/types/database";
 
 const LABEL: Record<AuctionStatus, string> = {
@@ -23,7 +24,22 @@ const DOT: Record<AuctionStatus, string> = {
   ended: "bg-red-500",
 };
 
-export function AuctionLifecycle({ status }: { status: AuctionStatus }) {
+export function AuctionLifecycle({
+  status,
+  currentState,
+}: {
+  status: AuctionStatus;
+  currentState?: {
+    id: "current";
+    current_player_id: string | null;
+    current_bid: number;
+    current_bidder_team_id: string | null;
+    base_price: number;
+    bid_increment: number;
+    default_team_budget: number;
+    updated_at: string;
+  };
+}) {
   const { toast } = useToast();
   const [pending, startTransition] = useTransition();
   const [local, setLocal] = React.useState<AuctionStatus>(status);
@@ -33,10 +49,20 @@ export function AuctionLifecycle({ status }: { status: AuctionStatus }) {
   function go(next: AuctionStatus, label: string) {
     const prev = local;
     setLocal(next);
+    // Fire the broadcast immediately so the public TV flips to paused/ended
+    // in <100ms — much faster than waiting for postgres_changes which can
+    // drop events over a flaky hotspot connection.
+    if (currentState) {
+      broadcastAuctionState({ ...currentState, status: next });
+    }
     startTransition(async () => {
       const r = await setAuctionStatus(next);
       if (r.error) {
         setLocal(prev);
+        // Roll the broadcast back too so the public TV returns to prev state.
+        if (currentState) {
+          broadcastAuctionState({ ...currentState, status: prev });
+        }
         toast({ variant: "destructive", title: label, description: r.error });
       } else {
         toast({ variant: "success", title: label });

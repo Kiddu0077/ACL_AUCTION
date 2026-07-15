@@ -3,6 +3,7 @@
 import * as React from "react";
 
 import { createClient } from "@/lib/supabase/browser";
+import { AUCTION_CHANNEL } from "@/lib/realtime/broadcast";
 import { contrastText } from "@/lib/utils";
 import type { Team } from "@/lib/types/database";
 
@@ -12,7 +13,9 @@ export function PublicPools({ initialTeams }: { initialTeams: Team[] }) {
   // Live updates if the admin tweaks pools
   React.useEffect(() => {
     const supabase = createClient();
-    const ch = supabase
+    // Two channels: postgres_changes (per-row updates) + AUCTION_CHANNEL
+    // broadcast for bulk "reload" signals sent after Restart / Draw / Clear.
+    const pg = supabase
       .channel("pools-live")
       .on(
         "postgres_changes",
@@ -25,8 +28,19 @@ export function PublicPools({ initialTeams }: { initialTeams: Team[] }) {
         },
       )
       .subscribe();
+    const bc = supabase
+      .channel(AUCTION_CHANNEL)
+      .on("broadcast", { event: "reload" }, async () => {
+        const { data } = await supabase
+          .from("teams")
+          .select("*")
+          .order("name");
+        if (data) setTeams(data as Team[]);
+      })
+      .subscribe();
     return () => {
-      supabase.removeChannel(ch);
+      supabase.removeChannel(pg);
+      supabase.removeChannel(bc);
     };
   }, []);
 

@@ -45,6 +45,18 @@ export function TeamLiveView({
           return [...prev, u];
         });
       })
+      .on("broadcast", { event: "reload" }, async () => {
+        const [pRes, sRes] = await Promise.all([
+          supabase.from("players").select("*"),
+          supabase
+            .from("auction_state")
+            .select("*")
+            .eq("id", "current")
+            .single(),
+        ]);
+        if (pRes.data) setPlayers(pRes.data as Player[]);
+        if (sRes.data) setState(sRes.data as AuctionState);
+      })
       .subscribe();
 
     const pgChanges = supabase

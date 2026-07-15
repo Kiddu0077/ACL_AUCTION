@@ -49,6 +49,10 @@ export function AllTeamsBoard({
           return [...prev, u];
         });
       })
+      .on("broadcast", { event: "reload" }, async () => {
+        const { data } = await supabase.from("players").select("*");
+        if (data) setPlayers(data as Player[]);
+      })
       .subscribe();
 
     const pgChanges = supabase

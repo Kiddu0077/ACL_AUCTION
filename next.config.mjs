@@ -1,6 +1,11 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   images: {
+    // Bypass Vercel's Image Optimization proxy — we hit the free-tier quota
+    // and it returns HTTP 402 for every subsequent request, breaking all
+    // player photos on the live site. Serving images direct from Supabase
+    // (no /_next/image transformation) is unlimited and stable.
+    unoptimized: true,
     remotePatterns: [
       {
         protocol: "https",

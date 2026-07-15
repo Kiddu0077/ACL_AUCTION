@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/use-toast";
 import { restartAuction } from "@/app/admin/auction-actions";
+import { broadcastReload } from "@/lib/realtime/broadcast-client";
 
 const CONFIRM_WORD = "RESTART";
 
@@ -38,6 +39,10 @@ export function RestartAuctionButton() {
           description: r.error,
         });
       } else {
+        // Signal all public displays to re-fetch — a bulk 150+ row update
+        // often gets rate-limited by Supabase Realtime, so relying on
+        // postgres_changes alone can leave the TV showing stale counts.
+        broadcastReload();
         toast({
           variant: "success",
           title: "Auction restarted",

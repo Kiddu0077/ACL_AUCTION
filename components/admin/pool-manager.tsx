@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/use-toast";
 import { contrastText } from "@/lib/utils";
+import { broadcastReload } from "@/lib/realtime/broadcast-client";
 import {
   clearPools,
   generateRandomPools,
@@ -58,6 +59,9 @@ export function PoolManager({ teams }: { teams: Team[] }) {
           description: r.error,
         });
       } else {
+        // Tell every public /pools tab to re-fetch — draws + clears touch
+        // many teams at once and Realtime can rate-limit the burst.
+        broadcastReload();
         toast({ variant: "success", title: label });
         router.refresh();
       }
