@@ -262,29 +262,25 @@ export function AuctionCockpit({
     );
   }
 
-  // ── Reserved auction positions ─────────────────────────────────────────────
-  // Certain players must land at a fixed position in the random draw, no matter
-  // how many times the auction is restarted. Position = (already-auctioned
-  // count) + 1, i.e. the pick about to be made. These players are held back
-  // from every earlier random pick, then force-selected at/after their slot.
-  const RESERVED_POSITIONS: {
-    position: number;
-    match: (p: Player) => boolean;
-  }[] = [
-    // Manikandan M — matched by phone (most reliable): +91 96454 74152
-    {
-      position: 110,
-      match: (p) => (p.phone ?? "").replace(/\D/g, "").endsWith("9645474152"),
-    },
-    // Akhil Ravi — matched by name tokens
-    {
-      position: 130,
-      match: (p) => {
-        const n = p.full_name.trim().toLowerCase();
-        return n.includes("akhil") && n.includes("ravi");
-      },
-    },
-  ];
+  // ── Reserved random-pick players ────────────────────────────────────────────
+  // Some players must land at a specific point in the random draw, no matter
+  // how many times the auction is restarted. They are held back from every
+  // earlier random pick, then force-selected when their trigger is reached.
+  //
+  //   • Manikandan M  → fixed position 110 from the start
+  //   • Akhil Ravi    → "before the last 10": picked when 11 players remain,
+  //                      so exactly 10 come after him.
+  const digitsOf = (p: Player) => (p.phone ?? "").replace(/\D/g, "");
+  const matchManikandan = (p: Player) => digitsOf(p).endsWith("9645474152");
+  const matchAkhil = (p: Player) => {
+    const n = p.full_name.trim().toLowerCase();
+    return (
+      digitsOf(p).endsWith("9745560065") ||
+      (n.includes("akhil") && n.includes("ravi"))
+    );
+  };
+
+  const AKHIL_TAIL = 11; // trigger when this many (incl. Akhil) remain → 10 after
 
   function doPickRandom() {
     if (currentPlayer) return;
@@ -293,34 +289,39 @@ export function AuctionCockpit({
       return;
     }
 
-    // How many players have already been auctioned (sold or unsold).
+    // Position from the start = already-auctioned count + 1 (the pick now).
     const auctionedCount = players.filter(
       (p) => p.status !== "Rejected" && p.sold_at,
     ).length;
-    const position = auctionedCount + 1; // the pick we're about to make
+    const position = auctionedCount + 1;
 
-    // Which reserved players are still available in the pool right now.
-    const reservedInPool = RESERVED_POSITIONS.map((r) => ({
-      ...r,
-      player: fullPool.find(r.match),
-    })).filter((r) => r.player);
+    // Players still available to auction (equals fullPool here).
+    const remaining = fullPool.length;
 
-    // If we've reached (or passed) a reserved slot and that player is still
-    // available, force them onto the block. Check the LATEST slot first so
-    // Akhil (130) wins over Manikandan (110) if both are somehow pending.
-    const due = reservedInPool
-      .filter((r) => position >= r.position)
-      .sort((a, b) => b.position - a.position)[0];
-    if (due?.player) {
-      doPutOnBlock(due.player.id);
+    const akhil = fullPool.find(matchAkhil);
+    const mani = fullPool.find(matchManikandan);
+
+    // 1) Akhil — force when we're down to the last 11 (10 will follow him).
+    //    Using <= so a manual pick that overshoots still triggers him.
+    if (akhil && remaining <= AKHIL_TAIL) {
+      doPutOnBlock(akhil.id);
       return;
     }
 
-    // Otherwise pick randomly, but EXCLUDE any not-yet-due reserved players so
-    // they stay held back for their slot. Fallback to the full pool if only
-    // reserved players remain (so the auction can still finish).
-    const reservedIds = new Set(reservedInPool.map((r) => r.player!.id));
-    let candidates = fullPool.filter((p) => !reservedIds.has(p.id));
+    // 2) Manikandan — force at/after position 110 (only while not yet in
+    //    Akhil's tail window, which is handled above).
+    if (mani && position >= 110) {
+      doPutOnBlock(mani.id);
+      return;
+    }
+
+    // 3) Otherwise random, EXCLUDING any reserved player not yet due, so they
+    //    stay held back. Fallback to full pool if only reserved players remain.
+    const heldBack = new Set<string>();
+    if (akhil && remaining > AKHIL_TAIL) heldBack.add(akhil.id);
+    if (mani && position < 110) heldBack.add(mani.id);
+
+    let candidates = fullPool.filter((p) => !heldBack.has(p.id));
     if (candidates.length === 0) candidates = fullPool;
 
     const pick = candidates[Math.floor(Math.random() * candidates.length)];
