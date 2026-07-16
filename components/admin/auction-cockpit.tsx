@@ -262,13 +262,68 @@ export function AuctionCockpit({
     );
   }
 
+  // ── Reserved auction positions ─────────────────────────────────────────────
+  // Certain players must land at a fixed position in the random draw, no matter
+  // how many times the auction is restarted. Position = (already-auctioned
+  // count) + 1, i.e. the pick about to be made. These players are held back
+  // from every earlier random pick, then force-selected at/after their slot.
+  const RESERVED_POSITIONS: {
+    position: number;
+    match: (p: Player) => boolean;
+  }[] = [
+    // Manikandan M — matched by phone (most reliable): +91 96454 74152
+    {
+      position: 110,
+      match: (p) => (p.phone ?? "").replace(/\D/g, "").endsWith("9645474152"),
+    },
+    // Akhil Ravi — matched by name tokens
+    {
+      position: 130,
+      match: (p) => {
+        const n = p.full_name.trim().toLowerCase();
+        return n.includes("akhil") && n.includes("ravi");
+      },
+    },
+  ];
+
   function doPickRandom() {
     if (currentPlayer) return;
     if (fullPool.length === 0) {
       toast({ variant: "destructive", title: "No eligible players left" });
       return;
     }
-    const pick = fullPool[Math.floor(Math.random() * fullPool.length)];
+
+    // How many players have already been auctioned (sold or unsold).
+    const auctionedCount = players.filter(
+      (p) => p.status !== "Rejected" && p.sold_at,
+    ).length;
+    const position = auctionedCount + 1; // the pick we're about to make
+
+    // Which reserved players are still available in the pool right now.
+    const reservedInPool = RESERVED_POSITIONS.map((r) => ({
+      ...r,
+      player: fullPool.find(r.match),
+    })).filter((r) => r.player);
+
+    // If we've reached (or passed) a reserved slot and that player is still
+    // available, force them onto the block. Check the LATEST slot first so
+    // Akhil (130) wins over Manikandan (110) if both are somehow pending.
+    const due = reservedInPool
+      .filter((r) => position >= r.position)
+      .sort((a, b) => b.position - a.position)[0];
+    if (due?.player) {
+      doPutOnBlock(due.player.id);
+      return;
+    }
+
+    // Otherwise pick randomly, but EXCLUDE any not-yet-due reserved players so
+    // they stay held back for their slot. Fallback to the full pool if only
+    // reserved players remain (so the auction can still finish).
+    const reservedIds = new Set(reservedInPool.map((r) => r.player!.id));
+    let candidates = fullPool.filter((p) => !reservedIds.has(p.id));
+    if (candidates.length === 0) candidates = fullPool;
+
+    const pick = candidates[Math.floor(Math.random() * candidates.length)];
     doPutOnBlock(pick.id);
   }
 
