@@ -170,19 +170,6 @@ export function AuctionLiveBoard({
     ? players.find((p) => p.id === state.current_player_id)
     : null;
 
-  // Per-team stats — count & spent — computed live from players
-  const teamStats = React.useMemo(() => {
-    const m = new Map<string, { count: number; spent: number }>();
-    for (const p of players) {
-      if (!p.team_id) continue;
-      const cur = m.get(p.team_id) ?? { count: 0, spent: 0 };
-      cur.count += 1;
-      cur.spent += p.sold_price ?? 0;
-      m.set(p.team_id, cur);
-    }
-    return m;
-  }, [players]);
-
   // Paused / ended overlay
   if (state.status === "paused" || state.status === "ended") {
     const ended = state.status === "ended";
@@ -275,9 +262,10 @@ export function AuctionLiveBoard({
         </div>
       )}
 
-      {/* Main board — h-full so it fills the flex-1 parent on any TV/monitor */}
-      <div className="grid h-full grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1.75fr)_minmax(0,1fr)] lg:gap-4">
-        {/* ── LEFT — current player ─────────────────────────────────────── */}
+      {/* Main board — single full-bleed player panel, no side rail.
+          h-full so it fills the flex-1 parent on any TV/monitor. */}
+      <div className="h-full">
+        {/* ── Current player — fills the entire screen ─────────────────── */}
         <div
           className="relative flex h-full flex-col overflow-hidden rounded-2xl border-2 border-secondary shadow-2xl"
           style={{
@@ -365,69 +353,6 @@ export function AuctionLiveBoard({
           )}
         </div>
 
-        {/* ── RIGHT — teams grid ─────────────────────────────────────────── */}
-        <div className="flex h-full flex-col rounded-2xl border-2 border-cricket-pitch/30 bg-white p-3 shadow-xl sm:p-4">
-          <div className="mb-2 flex items-baseline justify-between">
-            <h2 className="text-xs font-black uppercase tracking-[0.25em] text-cricket-pitch sm:text-sm">
-              Teams
-            </h2>
-            <span className="text-[10px] uppercase tracking-wider text-muted-foreground sm:text-xs">
-              Points left
-            </span>
-          </div>
-          {teams.length === 0 ? (
-            <p className="py-6 text-center text-sm text-muted-foreground">
-              No teams yet.
-            </p>
-          ) : (
-            <div className="grid flex-1 auto-rows-fr grid-cols-1 gap-1.5 overflow-y-auto sm:grid-cols-2">
-              {teams.map((t) => {
-                const s = teamStats.get(t.id) ?? { count: 0, spent: 0 };
-                const remaining = t.budget_total - s.spent;
-                const pct = Math.max(
-                  0,
-                  Math.min(100, (s.spent / t.budget_total) * 100),
-                );
-                const low = remaining < t.budget_total * 0.1;
-                return (
-                  <div
-                    key={t.id}
-                    className="overflow-hidden rounded-lg border p-2 transition"
-                    style={{
-                      borderLeftColor: t.color ?? "#1e3a8a",
-                      borderLeftWidth: 5,
-                    }}
-                  >
-                    <div className="flex items-baseline justify-between gap-1">
-                      <span className="truncate text-xs font-bold sm:text-sm">
-                        {t.name}
-                      </span>
-                      <span className="flex-shrink-0 text-[10px] font-semibold uppercase text-muted-foreground">
-                        {s.count}/{t.squad_size}
-                      </span>
-                    </div>
-                    <div className="my-1 h-1 overflow-hidden rounded-full bg-muted">
-                      <div
-                        className="h-full transition-[width] duration-500"
-                        style={{
-                          width: `${pct}%`,
-                          background: t.color ?? "#1e3a8a",
-                        }}
-                      />
-                    </div>
-                    <div
-                      className={`text-right font-mono text-sm font-black tabular-nums sm:text-base ${
-                        low ? "text-destructive" : "text-emerald-700"
-                      }`}
-                    >
-                      ₹{inr(remaining)}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
       </div>
     </>
   );
