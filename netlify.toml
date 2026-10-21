@@ -1,5 +1,5 @@
-# Netlify config for the ICL auction — backup deployment.
-# Auto-detects Next.js 14 App Router via the official plugin.
+# Netlify production deployment for Pudur Premier League.
+# Uses the official Next.js App Router adapter.
 
 [build]
   command = "npm run build"

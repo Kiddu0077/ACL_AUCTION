@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useTransition } from "react";
+import { useAuctionManagementAction } from "@/lib/auction/use-management-action";
 import { Loader2, Settings } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -20,14 +20,17 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/use-toast";
 import { updateAuctionSettings } from "@/app/admin/auction-actions";
 import type { AuctionState } from "@/lib/types/database";
+import { isAuctionBusy, useAuctionBusy } from "@/lib/auction/activity";
 
 export function AuctionSettingsDialog({ state }: { state: AuctionState }) {
   const { toast } = useToast();
   const [open, setOpen] = React.useState(false);
-  const [pending, startTransition] = useTransition();
+  const [pending, runAction] = useAuctionManagementAction();
+  const auctionBusy = useAuctionBusy();
 
   function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (isAuctionBusy()) return;
     const data = new FormData(e.currentTarget);
     const input = {
       base_price: Number(data.get("base_price") || 0),
@@ -38,7 +41,7 @@ export function AuctionSettingsDialog({ state }: { state: AuctionState }) {
       toast({ variant: "destructive", title: "All values must be > 0" });
       return;
     }
-    startTransition(async () => {
+    void runAction(async () => {
       const r = await updateAuctionSettings(input);
       if (r.error) {
         toast({
@@ -54,9 +57,9 @@ export function AuctionSettingsDialog({ state }: { state: AuctionState }) {
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={(value) => { if (!pending) setOpen(value); }}>
       <DialogTrigger asChild>
-        <Button variant="outline" size="sm">
+        <Button variant="outline" size="sm" disabled={auctionBusy} title={auctionBusy ? "Wait for the current auction changes to finish saving." : undefined}>
           <Settings className="h-4 w-4" /> Settings
         </Button>
       </DialogTrigger>
@@ -65,8 +68,8 @@ export function AuctionSettingsDialog({ state }: { state: AuctionState }) {
           <DialogHeader>
             <DialogTitle>Auction settings</DialogTitle>
             <DialogDescription>
-              These apply to the live bidding. Changing base price or
-              increment mid-auction is fine — only new bids use the new value.
+              Set the auction defaults. Enter each player’s final sale price
+              in the cockpit when choosing the winning team.
             </DialogDescription>
           </DialogHeader>
 
@@ -83,7 +86,7 @@ export function AuctionSettingsDialog({ state }: { state: AuctionState }) {
                 required
               />
               <p className="mt-1 text-xs text-muted-foreground">
-                Starting bid when a player goes on the block.
+                Pre-fills the price when a player goes on the block.
               </p>
             </div>
             <div>
@@ -98,7 +101,7 @@ export function AuctionSettingsDialog({ state }: { state: AuctionState }) {
                 required
               />
               <p className="mt-1 text-xs text-muted-foreground">
-                How much each team-tap raises the bid.
+                Recommended step for bids called by the auctioneer.
               </p>
             </div>
             <div className="sm:col-span-2">
@@ -127,7 +130,7 @@ export function AuctionSettingsDialog({ state }: { state: AuctionState }) {
                 Cancel
               </Button>
             </DialogClose>
-            <Button type="submit" disabled={pending}>
+            <Button type="submit" disabled={pending || auctionBusy} title={auctionBusy ? "Wait for the current auction changes to finish saving." : undefined}>
               {pending && <Loader2 className="h-4 w-4 animate-spin" />}
               Save settings
             </Button>

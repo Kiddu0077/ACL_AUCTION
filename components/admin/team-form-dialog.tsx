@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useTransition } from "react";
+import { useAsyncAction } from "@/lib/use-async-action";
 import { Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,7 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/use-toast";
 import { createTeam, updateTeam } from "@/app/admin/auction-actions";
 import type { Team } from "@/lib/types/database";
+import { broadcastReload } from "@/lib/realtime/broadcast-client";
 
 export function TeamFormDialog({
   team,
@@ -33,7 +34,7 @@ export function TeamFormDialog({
   const editing = Boolean(team);
   const { toast } = useToast();
   const [open, setOpen] = React.useState(false);
-  const [pending, startTransition] = useTransition();
+  const [pending, runAction] = useAsyncAction();
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -58,7 +59,7 @@ export function TeamFormDialog({
       toast({ variant: "destructive", title: "Budget must be > 0" });
       return;
     }
-    startTransition(async () => {
+    void runAction(async () => {
       const result = team
         ? await updateTeam(team.id, input)
         : await createTeam(input);
@@ -69,6 +70,7 @@ export function TeamFormDialog({
           description: result.error,
         });
       } else {
+        broadcastReload();
         toast({
           variant: "success",
           title: editing ? `Updated ${input.name}` : `Added ${input.name}`,
@@ -79,7 +81,7 @@ export function TeamFormDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={(value) => { if (!pending) setOpen(value); }}>
       <DialogTrigger asChild>{trigger}</DialogTrigger>
       <DialogContent>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -100,7 +102,7 @@ export function TeamFormDialog({
                 name="name"
                 required
                 defaultValue={team?.name ?? ""}
-                placeholder="e.g. Independence Warriors"
+                placeholder="e.g. Pudur Warriors"
               />
             </div>
             <div>
@@ -110,7 +112,7 @@ export function TeamFormDialog({
                 name="short_name"
                 maxLength={6}
                 defaultValue={team?.short_name ?? ""}
-                placeholder="ATG"
+                placeholder="PDW"
               />
             </div>
             <div>

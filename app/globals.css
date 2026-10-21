@@ -4,26 +4,27 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222 47% 11%;
+    --background: 48 33% 97%;
+    --foreground: 164 38% 14%;
     --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
+    --card-foreground: 164 38% 14%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222 47% 11%;
-    --primary: 221 83% 33%;
+    --popover-foreground: 164 38% 14%;
+    --primary: 164 58% 20%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 45 93% 47%;
-    --secondary-foreground: 222 47% 11%;
-    --accent: 142 76% 36%;
+    --secondary: 75 84% 67%;
+    --secondary-foreground: 164 38% 14%;
+    --accent: 164 45% 28%;
     --accent-foreground: 0 0% 100%;
-    --muted: 210 40% 96%;
-    --muted-foreground: 215 16% 47%;
+    --muted: 60 13% 93%;
+    --muted-foreground: 162 10% 40%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
-    --border: 214 32% 91%;
-    --input: 214 32% 91%;
-    --ring: 221 83% 33%;
-    --radius: 0.625rem;
+    --border: 150 13% 86%;
+    --input: 150 13% 80%;
+    --ring: 164 58% 20%;
+    --radius: 0.875rem;
+    --font-sans: "Avenir Next", "Segoe UI", sans-serif;
   }
 
   .dark {
@@ -57,10 +58,43 @@
     -webkit-tap-highlight-color: transparent;
   }
 
+  ::selection {
+    background: #d7f568;
+    color: #103c32;
+  }
+
+  a:focus-visible {
+    outline: 3px solid #7f9d2e;
+    outline-offset: 5px;
+    border-radius: 4px;
+  }
+
   /* WhatsApp in-app browser: avoid iOS auto-zoom on input focus */
   input,
   select,
   textarea {
     font-size: 16px;
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: "Arial Black", "Avenir Next", "Segoe UI", sans-serif;
+    font-weight: 900;
+    letter-spacing: -0.065em;
+  }
+
+  .pitch-grid {
+    background-image: linear-gradient(to right, rgb(255 255 255 / 0.045) 1px, transparent 1px), linear-gradient(to bottom, rgb(255 255 255 / 0.045) 1px, transparent 1px);
+    background-size: 48px 48px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

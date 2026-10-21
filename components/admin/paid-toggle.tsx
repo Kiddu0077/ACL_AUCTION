@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useTransition } from "react";
+import { useAsyncAction } from "@/lib/use-async-action";
 import { IndianRupee, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -18,16 +18,17 @@ export function PaidToggle({
   name: string;
 }) {
   const { toast } = useToast();
-  const [pending, startTransition] = useTransition();
+  const [pending, runAction] = useAsyncAction();
   const [localPaidAt, setLocalPaidAt] = React.useState<string | null>(paidAt);
+  React.useEffect(() => setLocalPaidAt(paidAt), [paidAt]);
 
   const isPaid = Boolean(localPaidAt);
 
   function handleToggle() {
     const next = !isPaid;
     const prevValue = localPaidAt;
-    setLocalPaidAt(next ? new Date().toISOString() : null);
-    startTransition(async () => {
+    void runAction(async () => {
+      setLocalPaidAt(next ? new Date().toISOString() : null);
       const result = await togglePaid(id, next);
       if (result.error) {
         setLocalPaidAt(prevValue);
@@ -42,7 +43,7 @@ export function PaidToggle({
           title: next ? `${name} marked Paid` : `${name} marked Unpaid`,
         });
       }
-    });
+    }, () => setLocalPaidAt(prevValue));
   }
 
   return (

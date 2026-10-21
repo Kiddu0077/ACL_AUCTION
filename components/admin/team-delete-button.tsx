@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useTransition } from "react";
+import { useAsyncAction } from "@/lib/use-async-action";
 import { Trash2, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/use-toast";
 import { deleteTeam } from "@/app/admin/auction-actions";
+import { broadcastReload } from "@/lib/realtime/broadcast-client";
 
 export function TeamDeleteButton({
   id,
@@ -28,11 +29,12 @@ export function TeamDeleteButton({
   playerCount: number;
 }) {
   const { toast } = useToast();
-  const [pending, startTransition] = useTransition();
+  const [pending, runAction] = useAsyncAction();
   const [open, setOpen] = React.useState(false);
 
   function handleDelete() {
-    startTransition(async () => {
+    if (playerCount > 0) return;
+    void runAction(async () => {
       const result = await deleteTeam(id);
       if (result.error) {
         toast({
@@ -41,6 +43,7 @@ export function TeamDeleteButton({
           description: result.error,
         });
       } else {
+        broadcastReload();
         toast({ variant: "success", title: `Deleted ${name}` });
         setOpen(false);
       }
@@ -48,7 +51,7 @@ export function TeamDeleteButton({
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={(value) => { if (!pending) setOpen(value); }}>
       <DialogTrigger asChild>
         <Button
           variant="ghost"
@@ -64,7 +67,7 @@ export function TeamDeleteButton({
           <DialogTitle>Delete {name}?</DialogTitle>
           <DialogDescription>
             {playerCount > 0
-              ? `This team has ${playerCount} sold player${playerCount === 1 ? "" : "s"}. Deleting the team will release them back to the unsold pool.`
+              ? `This team has ${playerCount} player${playerCount === 1 ? "" : "s"}. Transfer or remove them in Squad management before deleting this team.`
               : "This team has no players. Deletion is permanent."}
           </DialogDescription>
         </DialogHeader>
@@ -77,7 +80,7 @@ export function TeamDeleteButton({
           <Button
             variant="destructive"
             onClick={handleDelete}
-            disabled={pending}
+            disabled={pending || playerCount > 0}
           >
             {pending && <Loader2 className="h-4 w-4 animate-spin" />}
             Delete

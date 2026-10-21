@@ -1,18 +1,22 @@
 import Link from "next/link";
+import { PublicDataError } from "@/components/public-data-error";
 
 import { createClient } from "@/lib/supabase/server";
+import { TOURNAMENT_NAME } from "@/lib/tournament";
 import { AuctionLiveBoard } from "@/components/auction-live-board";
 import type { AuctionState, Player, Team } from "@/lib/types/database";
 
 export const dynamic = "force-dynamic";
 
 export default async function AuctionLivePage() {
-  const supabase = createClient();
+  const supabase = await createClient();
   const [playersRes, teamsRes, stateRes] = await Promise.all([
     supabase.from("players").select("*"),
     supabase.from("teams").select("*").order("name"),
     supabase.from("auction_state").select("*").eq("id", "current").single(),
   ]);
+
+  if (playersRes.error || teamsRes.error || stateRes.error) return <PublicDataError />;
 
   const players = (playersRes.data ?? []) as Player[];
   const teams = (teamsRes.data ?? []) as Team[];
@@ -24,14 +28,14 @@ export default async function AuctionLivePage() {
     base_price: 100,
     bid_increment: 100,
     default_team_budget: 10000,
+    status: "idle",
     updated_at: new Date().toISOString(),
   }) as AuctionState;
 
-  const tournament =
-    process.env.NEXT_PUBLIC_TOURNAMENT_NAME ?? "Cricket League";
+  const tournament = TOURNAMENT_NAME;
 
   return (
-    <main className="relative flex h-screen flex-col overflow-hidden bg-gradient-to-br from-slate-950 via-cricket-pitch to-blue-950">
+    <main className="relative flex h-screen flex-col overflow-hidden bg-gradient-to-br from-[#091b16] via-cricket-pitch to-[#102f25]">
       {/* Background atmosphere */}
       <div className="pointer-events-none absolute inset-0 opacity-[0.06] [background-image:radial-gradient(circle_at_2px_2px,white_1px,transparent_0)] [background-size:48px_48px]" />
       <div className="pointer-events-none absolute -left-40 top-1/4 h-[28rem] w-[28rem] rounded-full bg-secondary/15 blur-3xl" />

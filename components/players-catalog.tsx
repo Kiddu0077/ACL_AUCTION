@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import Image from "next/image";
+import { PlayerAvatar } from "@/components/player-avatar";
+import Link from "next/link";
 import { Search } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
@@ -12,9 +13,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { createClient } from "@/lib/supabase/browser";
-import { AUCTION_CHANNEL } from "@/lib/realtime/broadcast";
+import { usePublicLiveData } from "@/components/use-public-live-data";
+import { ConnectionIndicator } from "@/components/connection-indicator";
 import { contrastText } from "@/lib/utils";
+import { REGISTRATION_PATH } from "@/lib/tournament";
 import type { AuctionState, Player, PlayerRole, Team } from "@/lib/types/database";
 
 function inr(n: number) {
@@ -33,79 +35,12 @@ export function PlayersCatalog({
   initialTeams: Team[];
   initialState: AuctionState | null;
 }) {
-  const teams = initialTeams;
-  const [players, setPlayers] = React.useState(initialPlayers);
-  const [state, setState] = React.useState(initialState);
+  const { teams, players, state, connection, syncError } = usePublicLiveData({
+    channelName: "players-catalog", initialTeams, initialPlayers, initialState,
+  });
   const [query, setQuery] = React.useState("");
   const [role, setRole] = React.useState<RoleFilter>("all");
   const [avail, setAvail] = React.useState<AvailFilter>("all");
-
-  // Live updates
-  React.useEffect(() => {
-    const supabase = createClient();
-    const broadcast = supabase
-      .channel(AUCTION_CHANNEL)
-      .on("broadcast", { event: "state" }, (msg) => {
-        const s = (msg.payload as { state?: AuctionState })?.state;
-        if (s) setState(s);
-      })
-      .on("broadcast", { event: "player" }, (msg) => {
-        const u = (msg.payload as { player?: Player })?.player;
-        if (!u) return;
-        setPlayers((prev) =>
-          prev.some((p) => p.id === u.id)
-            ? prev.map((p) => (p.id === u.id ? u : p))
-            : [...prev, u],
-        );
-      })
-      .on("broadcast", { event: "reload" }, async () => {
-        // Full re-fetch after bulk mutations (restart, re-pool)
-        const [pRes, sRes] = await Promise.all([
-          supabase.from("players").select("*"),
-          supabase
-            .from("auction_state")
-            .select("*")
-            .eq("id", "current")
-            .single(),
-        ]);
-        if (pRes.data) setPlayers(pRes.data as Player[]);
-        if (sRes.data) setState(sRes.data as AuctionState);
-      })
-      .subscribe();
-
-    const pg = supabase
-      .channel("players-catalog")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "players" },
-        (payload) => {
-          if (payload.eventType === "UPDATE" && payload.new) {
-            const u = payload.new as Player;
-            setPlayers((prev) => prev.map((p) => (p.id === u.id ? u : p)));
-          } else if (payload.eventType === "INSERT" && payload.new) {
-            setPlayers((prev) => [...prev, payload.new as Player]);
-          } else if (payload.eventType === "DELETE" && payload.old) {
-            const id = (payload.old as { id?: string }).id;
-            if (id) setPlayers((prev) => prev.filter((p) => p.id !== id));
-          }
-        },
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "auction_state" },
-        (payload) => {
-          if (payload.eventType === "UPDATE" && payload.new) {
-            setState(payload.new as AuctionState);
-          }
-        },
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(broadcast);
-      supabase.removeChannel(pg);
-    };
-  }, []);
 
   const teamById = React.useMemo(() => {
     const m = new Map<string, Team>();
@@ -148,6 +83,8 @@ export function PlayersCatalog({
 
   return (
     <div className="space-y-4">
+      <ConnectionIndicator status={connection} />
+      {syncError && <p role="status" className="text-sm text-amber-700">Latest updates are temporarily unavailable. Reconnecting automatically.</p>}
       {/* Summary chips */}
       <div className="grid grid-cols-4 gap-2">
         {[
@@ -175,11 +112,12 @@ export function PlayersCatalog({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search name or city…"
+            aria-label="Search players by name or city"
             className="h-10 pl-8"
           />
         </div>
         <Select value={role} onValueChange={(v) => setRole(v as RoleFilter)}>
-          <SelectTrigger className="h-10 w-full sm:w-40">
+          <SelectTrigger aria-label="Filter by playing role" className="h-10 w-full sm:w-40">
             <SelectValue placeholder="Role" />
           </SelectTrigger>
           <SelectContent>
@@ -190,7 +128,7 @@ export function PlayersCatalog({
           </SelectContent>
         </Select>
         <Select value={avail} onValueChange={(v) => setAvail(v as AvailFilter)}>
-          <SelectTrigger className="h-10 w-full sm:w-40">
+          <SelectTrigger aria-label="Filter by auction status" className="h-10 w-full sm:w-40">
             <SelectValue placeholder="Status" />
           </SelectTrigger>
           <SelectContent>
@@ -220,12 +158,10 @@ export function PlayersCatalog({
             >
               <div className="relative aspect-square bg-muted">
                 {p.profile_picture_url ? (
-                  <Image
+                  <PlayerAvatar
                     src={p.profile_picture_url}
-                    alt={p.full_name}
-                    fill
-                    sizes="(max-width:640px) 50vw, 20vw"
-                    className="object-contain"
+                    name={p.full_name}
+                    className="h-full w-full object-contain"
                   />
                 ) : (
                   <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
@@ -277,9 +213,17 @@ export function PlayersCatalog({
       </div>
 
       {visible.length === 0 && (
-        <p className="py-12 text-center text-muted-foreground">
-          No players match your filters.
-        </p>
+        <div className="rounded-2xl border border-dashed bg-card px-6 py-14 text-center">
+          <h2 className="text-xl font-bold text-foreground">
+            {players.length === 0 ? "A new season starts with you." : "No players match your filters."}
+          </h2>
+          {players.length === 0 && (
+            <>
+              <p className="mt-2 text-sm text-muted-foreground">Player registration is open. Be part of the first squad of new talent.</p>
+              <Link href={REGISTRATION_PATH} className="mt-6 inline-flex rounded-full bg-primary px-6 py-3 text-sm font-bold text-primary-foreground hover:bg-primary/90">Register as a player</Link>
+            </>
+          )}
+        </div>
       )}
     </div>
   );

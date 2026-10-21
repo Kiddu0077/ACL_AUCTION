@@ -3,6 +3,7 @@ import { ExternalLink, Gavel, Layers, ShieldCheck, Users } from "lucide-react";
 
 import { Card, CardContent } from "@/components/ui/card";
 import { createClient } from "@/lib/supabase/server";
+import { REGISTRATION_PATH, TOURNAMENT_NAME } from "@/lib/tournament";
 import { AddPlayerDialog } from "@/components/admin/add-player-dialog";
 import { ExportButtons } from "@/components/admin/export-buttons";
 import { PlayersTable } from "@/components/admin/players-table";
@@ -12,7 +13,7 @@ import type { Player } from "@/lib/types/database";
 export const dynamic = "force-dynamic";
 
 export default async function AdminDashboardPage() {
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data, error } = await supabase
     .from("players")
     .select("*")
@@ -25,6 +26,9 @@ export default async function AdminDashboardPage() {
       <header className="border-b bg-white">
         <div className="container flex flex-wrap items-center justify-between gap-3 py-4">
           <div>
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-primary">
+              {TOURNAMENT_NAME}
+            </p>
             <h1 className="text-xl font-bold text-cricket-pitch">
               Admin Dashboard
             </h1>
@@ -63,6 +67,14 @@ export default async function AdminDashboardPage() {
             <span className="mx-1 hidden h-6 w-px bg-border sm:inline-block" />
 
             {/* Public view links (open in new tab) */}
+            <Link
+              href={REGISTRATION_PATH}
+              target="_blank"
+              className="inline-flex h-9 items-center gap-1 rounded-md border border-input px-2.5 text-xs text-muted-foreground hover:bg-muted"
+              title="Player registration form (opens in new tab)"
+            >
+              Registration <ExternalLink className="h-3 w-3" />
+            </Link>
             <Link
               href="/players"
               target="_blank"

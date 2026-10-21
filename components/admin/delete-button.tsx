@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useTransition } from "react";
+import { useAsyncAction } from "@/lib/use-async-action";
 import { Trash2, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -26,11 +26,11 @@ export function DeleteButton({
   name: string;
 }) {
   const { toast } = useToast();
-  const [pending, startTransition] = useTransition();
+  const [pending, runAction] = useAsyncAction();
   const [open, setOpen] = React.useState(false);
 
   function handleDelete() {
-    startTransition(async () => {
+    void runAction(async () => {
       const result = await deletePlayer(id);
       if (result.error) {
         toast({
@@ -46,7 +46,7 @@ export function DeleteButton({
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={(value) => { if (!pending) setOpen(value); }}>
       <DialogTrigger asChild>
         <Button
           variant="ghost"
@@ -61,7 +61,7 @@ export function DeleteButton({
         <DialogHeader>
           <DialogTitle>Delete {name}?</DialogTitle>
           <DialogDescription>
-            This permanently removes the registration and the player's profile
+            This permanently removes the registration and the player&apos;s profile
             photo and any payment screenshot from storage. This cannot be
             undone.
           </DialogDescription>

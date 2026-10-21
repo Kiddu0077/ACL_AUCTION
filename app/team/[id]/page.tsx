@@ -1,8 +1,10 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Gavel } from "lucide-react";
+import { PublicDataError } from "@/components/public-data-error";
+import { Gavel } from "lucide-react";
 
 import { createClient } from "@/lib/supabase/server";
+import { TOURNAMENT_NAME } from "@/lib/tournament";
 import { TeamLiveView } from "@/components/team-live-view";
 import type { AuctionState, Player, Team } from "@/lib/types/database";
 
@@ -11,27 +13,30 @@ export const dynamic = "force-dynamic";
 export default async function TeamPage({
   params,
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }) {
-  const supabase = createClient();
+  const { id } = await params;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) notFound();
+  const supabase = await createClient();
   const [teamRes, playersRes, stateRes] = await Promise.all([
-    supabase.from("teams").select("*").eq("id", params.id).single(),
+    supabase.from("teams").select("*").eq("id", id).maybeSingle(),
     supabase.from("players").select("*"),
     supabase.from("auction_state").select("*").eq("id", "current").single(),
   ]);
 
-  if (teamRes.error || !teamRes.data) {
+  if (teamRes.error || playersRes.error || stateRes.error) return <PublicDataError />;
+
+  if (!teamRes.data) {
     notFound();
   }
 
   const team = teamRes.data as Team;
   const players = (playersRes.data ?? []) as Player[];
   const state = (stateRes.data ?? null) as AuctionState | null;
-  const tournament =
-    process.env.NEXT_PUBLIC_TOURNAMENT_NAME ?? "Cricket League";
+  const tournament = TOURNAMENT_NAME;
 
   return (
-    <main className="min-h-screen bg-gradient-to-b from-slate-100 to-blue-100 pb-10">
+    <main className="min-h-screen bg-background pb-10">
       <header className="bg-cricket-pitch px-4 py-3 text-white shadow">
         <div className="container flex flex-wrap items-center justify-between gap-2">
           <div>

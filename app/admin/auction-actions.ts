@@ -4,24 +4,45 @@ import { revalidatePath } from "next/cache";
 
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { requireAuthenticatedClient } from "@/lib/supabase/auth";
+import {
+  checkTeamAllocation,
+  checkTeamLimits,
+  clearPlayerBlock,
+  completePlayerSale,
+  completeUnsoldPlayer,
+  selectAuctionPlayer,
+  recallAuctionPlayer,
+  type AuctionMutationResult,
+} from "@/lib/auction/mutations";
+import { adjustedPurse, adminPlayerSchema, auctionSettingsSchema, nonnegativeInteger, positiveInteger, teamSchema } from "@/lib/validations/admin";
+import { drawTeamPools } from "@/lib/team-pools";
 import type {
   AuctionStatus,
   TeamInsert,
   TeamUpdate,
 } from "@/lib/types/database";
 
+async function authenticatedClient() {
+  try {
+    return (await requireAuthenticatedClient()).supabase;
+  } catch (error) {
+    if (error instanceof Error && error.message === "Unauthorized") return null;
+    throw error;
+  }
+}
+
 async function requireAuth() {
-  const supabase = createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  return user;
+  return (await authenticatedClient()) !== null;
 }
 
 function revalidateAuction() {
   revalidatePath("/admin/auction");
   revalidatePath("/admin/teams");
+  revalidatePath("/admin/squads");
   revalidatePath("/auction");
+  revalidatePath("/teams");
+  revalidatePath("/players");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -29,8 +50,10 @@ function revalidateAuction() {
 // ─────────────────────────────────────────────────────────────────────────────
 export async function createTeam(input: TeamInsert) {
   if (!(await requireAuth())) return { error: "Not authenticated" };
-  const supabase = createClient();
-  const { error } = await supabase.from("teams").insert(input);
+  const supabase = await createClient();
+  const parsed = teamSchema.safeParse(input);
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const { error } = await supabase.from("teams").insert(parsed.data);
   if (error) return { error: error.message };
   revalidateAuction();
   return { error: null };
@@ -38,8 +61,13 @@ export async function createTeam(input: TeamInsert) {
 
 export async function updateTeam(id: string, input: TeamUpdate) {
   if (!(await requireAuth())) return { error: "Not authenticated" };
-  const supabase = createClient();
-  const { error } = await supabase.from("teams").update(input).eq("id", id);
+  const supabase = await createClient();
+  const parsed = teamSchema.partial().safeParse(input);
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  if (!Object.keys(parsed.data).length) return { error: "No team changes supplied" };
+  const limits = await checkTeamLimits(supabase, id, parsed.data);
+  if (limits.error) return limits;
+  const { error } = await supabase.from("teams").update(parsed.data).eq("id", id).select("id").single();
   if (error) return { error: error.message };
   revalidateAuction();
   return { error: null };
@@ -50,7 +78,13 @@ export async function deleteTeam(id: string) {
   // Use admin client because deleting a team also nulls out players.team_id
   // via the foreign-key cascade; service role bypasses any RLS edge cases.
   const admin = createAdminClient();
-  const { error } = await admin.from("teams").delete().eq("id", id);
+  // Deleting an assigned team would leave players with a sold price but no
+  // team. Require explicitly removing/transferring its players first.
+  const { count, error: countError } = await admin
+    .from("players").select("id", { count: "exact", head: true }).eq("team_id", id);
+  if (countError) return { error: countError.message };
+  if (count) return { error: "Remove or transfer this team's players before deleting the team" };
+  const { error } = await admin.from("teams").delete().eq("id", id).select("id").single();
   if (error) return { error: error.message };
   revalidateAuction();
   return { error: null };
@@ -59,249 +93,150 @@ export async function deleteTeam(id: string) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Auction state
 // ─────────────────────────────────────────────────────────────────────────────
-export async function putPlayerOnBlock(playerId: string) {
-  if (!(await requireAuth())) return { error: "Not authenticated" };
-  const supabase = createClient();
-
-  // Read current base_price from state
-  const { data: state } = await supabase
-    .from("auction_state")
-    .select("base_price")
-    .eq("id", "current")
-    .single();
-
-  const basePrice = state?.base_price ?? 100;
-
-  const { error } = await supabase
-    .from("auction_state")
-    .update({
-      current_player_id: playerId,
-      current_bid: basePrice,
-      current_bidder_team_id: null,
-    })
-    .eq("id", "current");
-  if (error) return { error: error.message };
-  revalidateAuction();
-  return { error: null };
+export async function putPlayerOnBlock(playerId: string): Promise<AuctionMutationResult> {
+  const supabase = await authenticatedClient();
+  if (!supabase) return { error: "Not authenticated" };
+  return selectAuctionPlayer(supabase, playerId);
 }
 
 export async function raiseBid(teamId: string) {
-  if (!(await requireAuth())) return { error: "Not authenticated" };
-  const supabase = createClient();
+  const supabase = await authenticatedClient();
+  if (!supabase) return { error: "Not authenticated" };
 
   const { data: state, error: stateErr } = await supabase
     .from("auction_state")
-    .select("current_bid, bid_increment, current_bidder_team_id, current_player_id")
+    .select("*")
     .eq("id", "current")
     .single();
   if (stateErr) return { error: stateErr.message };
-  if (!state?.current_player_id)
-    return { error: "No player on the block" };
+  if (!state.current_player_id) return { error: "No player on the block" };
 
-  // If no one's bid yet, the first bid is AT the current base_price (we don't
-  // bump). Otherwise increment by bid_increment.
-  const nextBid =
-    state.current_bidder_team_id === null
-      ? state.current_bid
-      : state.current_bid + state.bid_increment;
-
-  const { error } = await supabase
+  const nextBid = state.current_bidder_team_id === null
+    ? state.current_bid
+    : state.current_bid + state.bid_increment;
+  if (!positiveInteger.safeParse(nextBid).success) return { error: "Invalid bid amount" };
+  const allocation = await checkTeamAllocation(supabase, teamId, nextBid);
+  if (allocation.error) return allocation;
+  const { data, error } = await supabase
     .from("auction_state")
-    .update({
-      current_bid: nextBid,
-      current_bidder_team_id: teamId,
-    })
-    .eq("id", "current");
+    .update({ current_bid: nextBid, current_bidder_team_id: teamId })
+    .eq("id", "current")
+    .eq("updated_at", state.updated_at)
+    .select("*")
+    .maybeSingle();
   if (error) return { error: error.message };
-  // No revalidate here: bids are high-frequency and the cockpit's optimistic
-  // state + the public board's broadcast already reflect the change instantly.
-  // The DB write above persists it for page reloads. Skipping revalidate
-  // avoids re-render churn that made rapid bidding feel laggy.
-  return { error: null, bid: nextBid };
+  if (!data) return { error: "The auction changed before this bid was saved. Please try again." };
+  return { error: null, bid: data.current_bid, state: data };
 }
 
 export async function setCustomBid(teamId: string, amount: number) {
-  if (!(await requireAuth())) return { error: "Not authenticated" };
-  if (!Number.isFinite(amount) || amount <= 0)
-    return { error: "Invalid amount" };
-  const supabase = createClient();
-  const { error } = await supabase
+  const supabase = await authenticatedClient();
+  if (!supabase) return { error: "Not authenticated" };
+  if (!positiveInteger.safeParse(amount).success) return { error: "Invalid amount" };
+  const { data: state, error: stateErr } = await supabase
     .from("auction_state")
-    .update({
-      current_bid: Math.floor(amount),
-      current_bidder_team_id: teamId,
-    })
-    .eq("id", "current");
+    .select("current_player_id, updated_at")
+    .eq("id", "current")
+    .single();
+  if (stateErr) return { error: stateErr.message };
+  if (!state.current_player_id) return { error: "No player on the block" };
+  const allocation = await checkTeamAllocation(supabase, teamId, amount);
+  if (allocation.error) return allocation;
+  const { data, error } = await supabase
+    .from("auction_state")
+    .update({ current_bid: Math.floor(amount), current_bidder_team_id: teamId })
+    .eq("id", "current")
+    .eq("updated_at", state.updated_at)
+    .select("*")
+    .maybeSingle();
   if (error) return { error: error.message };
-  return { error: null };
+  if (!data) return { error: "The auction changed before this bid was saved. Please try again." };
+  return { error: null, state: data };
 }
 
-// Direct sale: admin types the final price + picks the winning team + hits SOLD.
-// Single deterministic write — no incremental bid race, no stale state.
+// Hot-path mutations return rows from the write itself, including DB timestamps.
+// No route revalidation: the cockpit reconciles these results and Realtime keeps
+// other displays current without rerendering three pages after every click.
 export async function sellPlayer(
   playerId: string,
   teamId: string,
   price: number,
-) {
-  if (!(await requireAuth())) return { error: "Not authenticated" };
-  if (!playerId || !teamId)
-    return { error: "Player and team are required" };
-  if (!Number.isFinite(price) || price < 0)
-    return { error: "Invalid price" };
-
-  const supabase = createClient();
-  const finalPrice = Math.floor(price);
-
-  const { error: playerErr } = await supabase
-    .from("players")
-    .update({
-      team_id: teamId,
-      sold_price: finalPrice,
-      sold_at: new Date().toISOString(),
-    })
-    .eq("id", playerId);
-  if (playerErr) return { error: playerErr.message };
-
-  const { error: stateErr } = await supabase
-    .from("auction_state")
-    .update({
-      current_player_id: null,
-      current_bid: 0,
-      current_bidder_team_id: null,
-    })
-    .eq("id", "current");
-  if (stateErr) return { error: stateErr.message };
-
-  revalidateAuction();
-  return { error: null };
+): Promise<AuctionMutationResult> {
+  const supabase = await authenticatedClient();
+  if (!supabase) return { error: "Not authenticated" };
+  return completePlayerSale(supabase, playerId, teamId, price);
 }
 
-export async function markSold() {
-  if (!(await requireAuth())) return { error: "Not authenticated" };
-  const supabase = createClient();
-
-  const { data: state, error: stateErr } = await supabase
+export async function markSold(): Promise<AuctionMutationResult> {
+  const supabase = await authenticatedClient();
+  if (!supabase) return { error: "Not authenticated" };
+  const { data: state, error } = await supabase
     .from("auction_state")
     .select("current_player_id, current_bid, current_bidder_team_id")
     .eq("id", "current")
     .single();
-  if (stateErr) return { error: stateErr.message };
-  if (!state?.current_player_id) return { error: "No player on the block" };
-  if (!state.current_bidder_team_id)
-    return { error: "No team has bid yet — use Unsold instead" };
-
-  const { error: playerErr } = await supabase
-    .from("players")
-    .update({
-      team_id: state.current_bidder_team_id,
-      sold_price: state.current_bid,
-      sold_at: new Date().toISOString(),
-    })
-    .eq("id", state.current_player_id);
-  if (playerErr) return { error: playerErr.message };
-
-  // Clear the block.
-  const { error: clearErr } = await supabase
-    .from("auction_state")
-    .update({
-      current_player_id: null,
-      current_bid: 0,
-      current_bidder_team_id: null,
-    })
-    .eq("id", "current");
-  if (clearErr) return { error: clearErr.message };
-
-  revalidateAuction();
-  return { error: null };
-}
-
-export async function markUnsold() {
-  if (!(await requireAuth())) return { error: "Not authenticated" };
-  const supabase = createClient();
-
-  const { data: state, error: stateErr } = await supabase
-    .from("auction_state")
-    .select("current_player_id")
-    .eq("id", "current")
-    .single();
-  if (stateErr) return { error: stateErr.message };
-  if (!state?.current_player_id) return { error: "No player on the block" };
-
-  const { error: playerErr } = await supabase
-    .from("players")
-    .update({
-      team_id: null,
-      sold_price: null,
-      sold_at: new Date().toISOString(),
-    })
-    .eq("id", state.current_player_id);
-  if (playerErr) return { error: playerErr.message };
-
-  const { error: clearErr } = await supabase
-    .from("auction_state")
-    .update({
-      current_player_id: null,
-      current_bid: 0,
-      current_bidder_team_id: null,
-    })
-    .eq("id", "current");
-  if (clearErr) return { error: clearErr.message };
-
-  revalidateAuction();
-  return { error: null };
-}
-
-export async function clearBlock() {
-  // Cancel the current player without marking sold or unsold.
-  if (!(await requireAuth())) return { error: "Not authenticated" };
-  const supabase = createClient();
-  const { error } = await supabase
-    .from("auction_state")
-    .update({
-      current_player_id: null,
-      current_bid: 0,
-      current_bidder_team_id: null,
-    })
-    .eq("id", "current");
   if (error) return { error: error.message };
-  revalidateAuction();
-  return { error: null };
+  if (!state.current_player_id) return { error: "No player on the block" };
+  if (!state.current_bidder_team_id) return { error: "No team has bid yet — use Unsold instead" };
+  return completePlayerSale(supabase, state.current_player_id, state.current_bidder_team_id, state.current_bid);
 }
 
-export async function undoSale(playerId: string) {
-  // Returns a sold/unsold player back to the pool — clears team_id/price/sold_at.
-  if (!(await requireAuth())) return { error: "Not authenticated" };
-  const supabase = createClient();
-  const { error } = await supabase
-    .from("players")
-    .update({ team_id: null, sold_price: null, sold_at: null })
-    .eq("id", playerId);
-  if (error) return { error: error.message };
-  revalidateAuction();
-  return { error: null };
+export async function markUnsold(expectedPlayerId?: string): Promise<AuctionMutationResult> {
+  const supabase = await authenticatedClient();
+  if (!supabase) return { error: "Not authenticated" };
+  return completeUnsoldPlayer(supabase, expectedPlayerId);
+}
+
+export async function clearBlock(expectedPlayerId?: string): Promise<AuctionMutationResult> {
+  const supabase = await authenticatedClient();
+  if (!supabase) return { error: "Not authenticated" };
+  let playerId = expectedPlayerId;
+  if (!playerId) {
+    const { data, error } = await supabase
+      .from("auction_state")
+      .select("*")
+      .eq("id", "current")
+      .single();
+    if (error) return { error: error.message };
+    if (!data.current_player_id) return { error: null, state: data };
+    playerId = data.current_player_id;
+  }
+  return clearPlayerBlock(supabase, playerId);
+}
+
+export async function undoSale(playerId: string): Promise<AuctionMutationResult> {
+  const supabase = await authenticatedClient();
+  if (!supabase) return { error: "Not authenticated" };
+  return recallAuctionPlayer(supabase, playerId);
 }
 
 // ── Auction lifecycle ───────────────────────────────────────────────────────
 export async function setAuctionStatus(status: AuctionStatus) {
   if (!(await requireAuth())) return { error: "Not authenticated" };
-  const supabase = createClient();
-  const { error } = await supabase
+  if (!["idle", "live", "paused", "ended"].includes(status)) return { error: "Invalid auction status" };
+  const supabase = await createClient();
+  const { data, error } = await supabase
     .from("auction_state")
     .update({ status })
-    .eq("id", "current");
+    .eq("id", "current")
+    .select("*")
+    .single();
   if (error) return { error: error.message };
   revalidateAuction();
-  return { error: null };
+  return { error: null, state: data };
 }
 
 // ── Team locking & purse ────────────────────────────────────────────────────
 export async function setTeamLocked(id: string, locked: boolean) {
   if (!(await requireAuth())) return { error: "Not authenticated" };
-  const supabase = createClient();
+  if (typeof locked !== "boolean") return { error: "Invalid team lock setting" };
+  const supabase = await createClient();
   const { error } = await supabase
     .from("teams")
     .update({ is_locked: locked })
-    .eq("id", id);
+    .eq("id", id)
+    .select("id")
+    .single();
   if (error) return { error: error.message };
   revalidateAuction();
   return { error: null };
@@ -309,12 +244,16 @@ export async function setTeamLocked(id: string, locked: boolean) {
 
 export async function setSquadSize(id: string, size: number) {
   if (!(await requireAuth())) return { error: "Not authenticated" };
-  if (!Number.isFinite(size) || size < 1) return { error: "Invalid size" };
-  const supabase = createClient();
+  if (!positiveInteger.safeParse(size).success) return { error: "Squad size must be a positive whole number" };
+  const supabase = await createClient();
+  const limits = await checkTeamLimits(supabase, id, { squad_size: size });
+  if (limits.error) return limits;
   const { error } = await supabase
     .from("teams")
     .update({ squad_size: Math.floor(size) })
-    .eq("id", id);
+    .eq("id", id)
+    .select("id")
+    .single();
   if (error) return { error: error.message };
   revalidateAuction();
   return { error: null };
@@ -323,18 +262,25 @@ export async function setSquadSize(id: string, size: number) {
 // Adjust total purse by a delta (positive = bonus, negative = deduction).
 export async function adjustPurse(id: string, delta: number) {
   if (!(await requireAuth())) return { error: "Not authenticated" };
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data: team, error: fetchErr } = await supabase
     .from("teams")
-    .select("budget_total")
+    .select("budget_total, updated_at")
     .eq("id", id)
     .single();
   if (fetchErr) return { error: fetchErr.message };
-  const next = Math.max(0, (team?.budget_total ?? 0) + Math.floor(delta));
+  const adjusted = adjustedPurse(team.budget_total, delta);
+  if (adjusted.error || adjusted.budget === undefined) return { error: adjusted.error ?? "Invalid purse" };
+  const next = adjusted.budget;
+  const limits = await checkTeamLimits(supabase, id, { budget_total: next });
+  if (limits.error) return limits;
   const { error } = await supabase
     .from("teams")
     .update({ budget_total: next })
-    .eq("id", id);
+    .eq("id", id)
+    .eq("updated_at", team.updated_at)
+    .select("id")
+    .single();
   if (error) return { error: error.message };
   revalidateAuction();
   return { error: null, budget_total: next };
@@ -343,17 +289,22 @@ export async function adjustPurse(id: string, delta: number) {
 // Reset purse back to the auction-wide default budget.
 export async function resetPurse(id: string) {
   if (!(await requireAuth())) return { error: "Not authenticated" };
-  const supabase = createClient();
-  const { data: state } = await supabase
+  const supabase = await createClient();
+  const { data: state, error: stateError } = await supabase
     .from("auction_state")
     .select("default_team_budget")
     .eq("id", "current")
     .single();
-  const budget = state?.default_team_budget ?? 10000;
+  if (stateError) return { error: stateError.message };
+  const budget = state.default_team_budget;
+  const limits = await checkTeamLimits(supabase, id, { budget_total: budget });
+  if (limits.error) return limits;
   const { error } = await supabase
     .from("teams")
     .update({ budget_total: budget })
-    .eq("id", id);
+    .eq("id", id)
+    .select("id")
+    .single();
   if (error) return { error: error.message };
   revalidateAuction();
   return { error: null };
@@ -371,14 +322,17 @@ export async function createIconPlayer(input: {
   phone?: string | null;
 }) {
   if (!(await requireAuth())) return { error: "Not authenticated" };
-  const name = input.full_name.trim();
-  const city = input.city.trim();
-  if (!name || !city) return { error: "Name and city are required" };
+  const parsed = adminPlayerSchema.safeParse(input);
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  if (!nonnegativeInteger.safeParse(input.sold_price).success) return { error: "Invalid price" };
+  const { full_name: name, city } = parsed.data;
 
   // Service-role client: the public RLS insert policy only allows new rows
   // with status='Pending' (for the registration form). Icon players are
   // created Verified + pre-assigned, so we bypass RLS here (admin-only action).
   const supabase = createAdminClient();
+  const allocation = await checkTeamAllocation(supabase, input.team_id, input.sold_price, undefined, true);
+  if (allocation.error) return allocation;
   const { error } = await supabase.from("players").insert({
     full_name: name,
     role: input.role,
@@ -409,8 +363,10 @@ export async function forceAssignPlayer(
   price: number,
 ) {
   if (!(await requireAuth())) return { error: "Not authenticated" };
-  if (!Number.isFinite(price) || price < 0) return { error: "Invalid price" };
-  const supabase = createClient();
+  if (!nonnegativeInteger.safeParse(price).success) return { error: "Price must be a non-negative whole number" };
+  const supabase = await createClient();
+  const allocation = await checkTeamAllocation(supabase, teamId, price, playerId, true);
+  if (allocation.error) return allocation;
   const { error } = await supabase
     .from("players")
     .update({
@@ -418,7 +374,9 @@ export async function forceAssignPlayer(
       sold_price: Math.floor(price),
       sold_at: new Date().toISOString(),
     })
-    .eq("id", playerId);
+    .eq("id", playerId)
+    .select("id")
+    .single();
   if (error) return { error: error.message };
   revalidateAuction();
   return { error: null };
@@ -426,15 +384,12 @@ export async function forceAssignPlayer(
 
 // Remove a player from their team → back to the available pool.
 export async function removeFromTeam(playerId: string) {
-  if (!(await requireAuth())) return { error: "Not authenticated" };
-  const supabase = createClient();
-  const { error } = await supabase
-    .from("players")
-    .update({ team_id: null, sold_price: null, sold_at: null })
-    .eq("id", playerId);
-  if (error) return { error: error.message };
+  const supabase = await authenticatedClient();
+  if (!supabase) return { error: "Not authenticated" };
+  const result = await recallAuctionPlayer(supabase, playerId);
+  if (result.error) return result;
   revalidateAuction();
-  return { error: null };
+  return result;
 }
 
 // Move a player to a different team, optionally at a new price.
@@ -444,17 +399,27 @@ export async function transferPlayer(
   newPrice?: number,
 ) {
   if (!(await requireAuth())) return { error: "Not authenticated" };
-  const supabase = createClient();
+  const supabase = await createClient();
   const patch: { team_id: string; sold_price?: number } = {
     team_id: toTeamId,
   };
-  if (newPrice !== undefined && Number.isFinite(newPrice) && newPrice >= 0) {
-    patch.sold_price = Math.floor(newPrice);
+  if (newPrice !== undefined) {
+    if (!nonnegativeInteger.safeParse(newPrice).success) return { error: "Invalid price" };
+    patch.sold_price = newPrice;
   }
+  const { data: player, error: playerError } = await supabase
+    .from("players").select("team_id, sold_price, updated_at").eq("id", playerId).single();
+  if (playerError) return { error: playerError.message };
+  if (!player.team_id) return { error: "Only assigned players can be transferred" };
+  const allocation = await checkTeamAllocation(supabase, toTeamId, newPrice ?? player.sold_price ?? 0, playerId, true);
+  if (allocation.error) return allocation;
   const { error } = await supabase
     .from("players")
     .update(patch)
-    .eq("id", playerId);
+    .eq("id", playerId)
+    .eq("updated_at", player.updated_at)
+    .select("id")
+    .single();
   if (error) return { error: error.message };
   revalidateAuction();
   return { error: null };
@@ -462,12 +427,21 @@ export async function transferPlayer(
 
 export async function editSoldPrice(playerId: string, price: number) {
   if (!(await requireAuth())) return { error: "Not authenticated" };
-  if (!Number.isFinite(price) || price < 0) return { error: "Invalid price" };
-  const supabase = createClient();
+  if (!nonnegativeInteger.safeParse(price).success) return { error: "Price must be a non-negative whole number" };
+  const supabase = await createClient();
+  const { data: player, error: playerError } = await supabase
+    .from("players").select("team_id, updated_at").eq("id", playerId).single();
+  if (playerError) return { error: playerError.message };
+  if (!player.team_id) return { error: "This player is not assigned to a team" };
+  const allocation = await checkTeamAllocation(supabase, player.team_id, price, playerId, true);
+  if (allocation.error) return allocation;
   const { error } = await supabase
     .from("players")
     .update({ sold_price: Math.floor(price) })
-    .eq("id", playerId);
+    .eq("id", playerId)
+    .eq("updated_at", player.updated_at)
+    .select("id")
+    .single();
   if (error) return { error: error.message };
   revalidateAuction();
   return { error: null };
@@ -477,7 +451,7 @@ export async function editSoldPrice(playerId: string, price: number) {
 // another bidding round. Sold players (team_id set) are untouched.
 export async function repoolUnsold() {
   if (!(await requireAuth())) return { error: "Not authenticated", count: 0 };
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data, error } = await supabase
     .from("players")
     .update({ sold_at: null })
@@ -485,7 +459,6 @@ export async function repoolUnsold() {
     .not("sold_at", "is", null)
     .select("id");
   if (error) return { error: error.message, count: 0 };
-  revalidateAuction();
   return { error: null, count: data?.length ?? 0 };
 }
 
@@ -495,74 +468,35 @@ export async function updateAuctionSettings(input: {
   default_team_budget?: number;
 }) {
   if (!(await requireAuth())) return { error: "Not authenticated" };
-  const supabase = createClient();
-  const patch: {
-    base_price?: number;
-    bid_increment?: number;
-    default_team_budget?: number;
-  } = {};
-  if (input.base_price !== undefined) patch.base_price = input.base_price;
-  if (input.bid_increment !== undefined)
-    patch.bid_increment = input.bid_increment;
-  if (input.default_team_budget !== undefined)
-    patch.default_team_budget = input.default_team_budget;
+  const parsed = auctionSettingsSchema.safeParse(input);
+  if (!parsed.success) return { error: "Auction amounts must be positive whole numbers" };
+  if (!Object.keys(parsed.data).length) return { error: "No setting changes supplied" };
+  const supabase = await createClient();
   const { error } = await supabase
     .from("auction_state")
-    .update(patch)
-    .eq("id", "current");
+    .update(parsed.data)
+    .eq("id", "current")
+    .select("id")
+    .single();
   if (error) return { error: error.message };
   revalidateAuction();
   return { error: null };
 }
 
 // ── Team pools (group-stage draw) ───────────────────────────────────────────
-// Server-side only: lists of teams pre-seeded into a specific pool every time
-// the "random" draw runs. The remaining slots in each pool are filled by a
-// Fisher-Yates shuffle. These lists live only in this server action — never
-// reach the client bundle or the public pools page.
-const FORCED_POOL_A = new Set(["sharkzz"]);
-const FORCED_POOL_B = new Set([
-  "royal strikers attapadi",
-  "agali strikers",
-  "asg",
-]);
-
 export async function generateRandomPools() {
   if (!(await requireAuth())) return { error: "Not authenticated" };
   const admin = createAdminClient();
 
   const { data: teams, error: fetchErr } = await admin
     .from("teams")
-    .select("id, name");
+    .select("id");
   if (fetchErr) return { error: fetchErr.message };
   if (!teams || teams.length === 0) return { error: "No teams to draw" };
 
-  const half = Math.ceil(teams.length / 2);
-  const norm = (s: string) => s.trim().toLowerCase();
-
-  // Bucket: forced to A, forced to B, up for grabs
-  const forcedA = teams.filter((t) => FORCED_POOL_A.has(norm(t.name)));
-  const forcedB = teams.filter((t) => FORCED_POOL_B.has(norm(t.name)));
-  const others = teams.filter(
-    (t) =>
-      !FORCED_POOL_A.has(norm(t.name)) && !FORCED_POOL_B.has(norm(t.name)),
-  );
-
-  // Fisher-Yates shuffle the "others"
-  for (let i = others.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [others[i], others[j]] = [others[j], others[i]];
-  }
-
-  // Fill remaining seats — Pool A first, then Pool B from what's left
-  const aSlots = Math.max(0, half - forcedA.length);
-  const bSlots = Math.max(0, half - forcedB.length);
-
-  const aFromOthers = others.slice(0, aSlots);
-  const bFromOthers = others.slice(aSlots, aSlots + bSlots);
-
-  const aIds = [...forcedA.map((t) => t.id), ...aFromOthers.map((t) => t.id)];
-  const bIds = [...forcedB.map((t) => t.id), ...bFromOthers.map((t) => t.id)];
+  const pools = drawTeamPools(teams);
+  const aIds = pools.A.map((team) => team.id);
+  const bIds = pools.B.map((team) => team.id);
 
   if (aIds.length > 0) {
     const { error } = await admin
@@ -588,11 +522,14 @@ export async function generateRandomPools() {
 // Manual single-team move — admin-only, indistinguishable on the public page.
 export async function setTeamPool(teamId: string, pool: "A" | "B" | null) {
   if (!(await requireAuth())) return { error: "Not authenticated" };
-  const supabase = createClient();
+  if (pool !== null && pool !== "A" && pool !== "B") return { error: "Invalid pool" };
+  const supabase = await createClient();
   const { error } = await supabase
     .from("teams")
     .update({ pool })
-    .eq("id", teamId);
+    .eq("id", teamId)
+    .select("id")
+    .single();
   if (error) return { error: error.message };
   revalidatePath("/admin/pools");
   revalidatePath("/pools");

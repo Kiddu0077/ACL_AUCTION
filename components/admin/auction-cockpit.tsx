@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { useTransition } from "react";
 import Image from "next/image";
 import {
   Check,
@@ -48,8 +47,9 @@ import {
 } from "@/components/connection-indicator";
 import type { AuctionState, Player, Team } from "@/lib/types/database";
 import type { RealtimeChannel } from "@supabase/supabase-js";
-import { useRouter } from "next/navigation";
 import { RefreshCcw } from "lucide-react";
+import { createOptimisticQueue } from "@/lib/auction/optimistic-queue";
+import { setAuctionBusy, useAuctionManagementBusy, isAuctionManagementBusy } from "@/lib/auction/activity";
 
 function inr(n: number) {
   return new Intl.NumberFormat("en-IN").format(n);
@@ -57,7 +57,7 @@ function inr(n: number) {
 
 export function AuctionCockpit({
   players: initialPlayers,
-  teams,
+  teams: initialTeams,
   state: initialState,
 }: {
   players: Player[];
@@ -65,76 +65,127 @@ export function AuctionCockpit({
   state: AuctionState;
 }) {
   const { toast } = useToast();
-  const router = useRouter();
-  const [pending, startTransition] = useTransition();
   const [query, setQuery] = React.useState("");
   const [confirmSaleOpen, setConfirmSaleOpen] = React.useState(false);
   const [conn, setConn] = React.useState<ConnectionStatus>("connecting");
+  type AuctionData = { state: AuctionState; players: Player[]; teams: Team[] };
+  type MutationResult = { error: string | null; state?: AuctionState | null; player?: Player; count?: number };
 
-  // Local optimistic state — applied instantly on click; rolled back on error.
-  const [state, setState] = React.useState(initialState);
-  const [players, setPlayers] = React.useState(initialPlayers);
+  const [queue] = React.useState(() => createOptimisticQueue<AuctionData>({
+    initial: { state: initialState, players: initialPlayers, teams: initialTeams },
+    recover: async () => {
+      const supabase = createClient();
+      const signal = AbortSignal.timeout(15000);
+      const [p, t, s] = await Promise.all([
+        supabase.from("players").select("*").order("full_name").abortSignal(signal),
+        supabase.from("teams").select("*").order("name").abortSignal(signal),
+        supabase.from("auction_state").select("*").eq("id", "current").abortSignal(signal).single(),
+      ]);
+      if (p.error || t.error || s.error || !s.data) throw new Error("Could not reload the auction");
+      return { players: p.data ?? [], teams: t.data ?? [], state: s.data };
+    },
+    onError: (message, cancelled) => toast({
+      variant: "destructive",
+      title: "Update not confirmed — restoring saved state",
+      description: `${message}${cancelled ? ` ${cancelled} queued action(s) cancelled; retry after resync.` : ""}`,
+    }),
+  }));
+  const snapshot = React.useSyncExternalStore(queue.subscribe, queue.getSnapshot, queue.getSnapshot);
+  const { state, players, teams } = snapshot.data;
+  const pending = snapshot.pending > 0;
+  const managementBusy = useAuctionManagementBusy();
+  const blocked = snapshot.recovering || !!snapshot.error || managementBusy;
 
-  // Direct-entry sale state: type the final price + pick winning team
   const [salePrice, setSalePrice] = React.useState<string>("");
   const [selectedTeamId, setSelectedTeamId] = React.useState<string | null>(null);
   const priceInputRef = React.useRef<HTMLInputElement>(null);
+  const broadcastRef = React.useRef<RealtimeChannel | null>(null);
+  const syncId = React.useRef("");
+  const sequence = React.useRef(0);
 
-  React.useEffect(() => setState(initialState), [initialState]);
-  React.useEffect(() => setPlayers(initialPlayers), [initialPlayers]);
+  React.useEffect(() => {
+    if (initialState.updated_at >= queue.getSnapshot().data.state.updated_at) {
+      queue.replace({ state: initialState, players: initialPlayers, teams: initialTeams });
+    }
+  }, [initialState, initialPlayers, initialTeams, queue]);
 
-  // Reset the sale entry whenever the player on the block changes.
-  // Default the price to the configured base_price for fast common case.
   React.useEffect(() => {
     setSalePrice(state.current_player_id ? String(state.base_price) : "");
     setSelectedTeamId(null);
     if (state.current_player_id) {
-      // Focus after the next paint — snappier than a setTimeout delay.
-      requestAnimationFrame(() => priceInputRef.current?.focus());
+      const frame = requestAnimationFrame(() => priceInputRef.current?.focus());
+      return () => cancelAnimationFrame(frame);
     }
   }, [state.current_player_id, state.base_price]);
 
-  // Broadcast channel — pushes updates to public viewers in <100ms.
-  // Also tracks connection status so admin sees a red badge on hotspot drops.
-  const broadcastRef = React.useRef<RealtimeChannel | null>(null);
+  function send(event: string, payload: Record<string, unknown>) {
+    void broadcastRef.current?.send({ type: "broadcast", event, payload }).catch(() => undefined);
+  }
+
   React.useEffect(() => {
     const supabase = createClient();
-    const channel = supabase
-      .channel(AUCTION_CHANNEL, { config: { broadcast: { self: false } } })
-      .subscribe((status) => setConn(realtimeStatus(status)));
+    syncId.current = crypto.randomUUID();
+    let connectedBefore = false;
+    const channel = supabase.channel(AUCTION_CHANNEL, { config: { broadcast: { self: false } } });
     broadcastRef.current = channel;
+    channel.subscribe((status) => {
+      setConn(realtimeStatus(status));
+      if (status === "SUBSCRIBED") {
+        if (connectedBefore) void queue.resync();
+        connectedBefore = true;
+        const current = queue.getSnapshot();
+        send("state", { state: current.data.state, pending: current.pending > 0 || current.recovering, syncId: syncId.current, sequence: ++sequence.current });
+      }
+    });
+    const unsubscribe = queue.subscribe(() => {
+      const current = queue.getSnapshot();
+      setAuctionBusy(current.pending > 0 || current.recovering || !!current.error);
+      send("state", { state: current.data.state, pending: current.pending > 0 || current.recovering, syncId: syncId.current, sequence: ++sequence.current });
+    });
+    const resync = () => { if (document.visibilityState === "visible") void queue.resync(); };
+    const warnUnsaved = (event: BeforeUnloadEvent) => {
+      const current = queue.getSnapshot();
+      if (current.pending || current.recovering) { event.preventDefault(); event.returnValue = ""; }
+    };
+    window.addEventListener("online", resync);
+    document.addEventListener("visibilitychange", resync);
+    window.addEventListener("beforeunload", warnUnsaved);
     return () => {
-      supabase.removeChannel(channel);
+      unsubscribe();
+      setAuctionBusy(false);
+      window.removeEventListener("online", resync);
+      document.removeEventListener("visibilitychange", resync);
+      window.removeEventListener("beforeunload", warnUnsaved);
+      void supabase.removeChannel(channel);
       broadcastRef.current = null;
     };
-  }, []);
+  }, [queue]);
 
-  function broadcastState(s: AuctionState) {
-    broadcastRef.current?.send({
-      type: "broadcast",
-      event: "state",
-      payload: { state: s },
-    });
-  }
-  function broadcastPlayer(p: Player) {
-    broadcastRef.current?.send({
-      type: "broadcast",
-      event: "player",
-      payload: { player: p },
-    });
-  }
-  function broadcastSold(payload: {
-    playerName: string;
-    photo: string | null;
-    role: string;
-    teamName: string;
-    teamColor: string | null;
-    price: number;
-  }) {
-    broadcastRef.current?.send({
-      type: "broadcast",
-      event: "sold",
-      payload,
+  function mutate(
+    apply: (data: AuctionData) => AuctionData,
+    execute: () => Promise<MutationResult>,
+    onCommit?: (result: MutationResult) => void,
+  ) {
+    if (isAuctionManagementBusy()) return false;
+    return queue.enqueue({
+      apply,
+      execute: async () => {
+        const result = await execute();
+        if (result.error) throw new Error(result.error);
+        return result;
+      },
+      commit: (data, result) => {
+        const next = apply(data);
+        return {
+          ...next,
+          state: result.state ?? next.state,
+          players: result.player ? next.players.map((player) => player.id === result.player!.id ? result.player! : player) : next.players,
+        };
+      },
+      onCommit: (result) => {
+        if (result.player) send("player", { player: result.player });
+        onCommit?.(result);
+      },
     });
   }
 
@@ -158,6 +209,8 @@ export function AuctionCockpit({
       .filter(
         (p) =>
           p.status !== "Rejected" &&
+          !p.is_icon &&
+          !p.team_id &&
           !p.sold_at &&
           p.id !== state.current_player_id,
       )
@@ -175,6 +228,8 @@ export function AuctionCockpit({
       players.filter(
         (p) =>
           p.status !== "Rejected" &&
+          !p.is_icon &&
+          !p.team_id &&
           !p.sold_at &&
           p.id !== state.current_player_id,
       ),
@@ -205,304 +260,117 @@ export function AuctionCockpit({
     : null;
 
   // Computed: is the entered price affordable for the selected team?
-  // Strip non-digits first — guards against "3,000" / "3000abc" etc. that
-  // would NaN out to 0 and cause an accidental ₹0 sale.
-  const cleanPrice = salePrice.replace(/[^0-9]/g, "");
-  const priceNumber = cleanPrice ? Number(cleanPrice) : 0;
+  // Accept only a positive integer; malformed input must never become a sale.
+  const priceNumber = salePrice.trim() ? Number(salePrice) : 0;
   const sellerRemaining = selectedTeam
     ? selectedTeam.budget_total -
       (teamStats.get(selectedTeam.id)?.spent ?? 0)
     : 0;
   const canSell =
+    !blocked &&
     !!currentPlayer &&
     !!selectedTeam &&
     !selectedTeam.is_locked &&
     (teamStats.get(selectedTeam.id)?.count ?? 0) < selectedTeam.squad_size &&
-    priceNumber > 0 && // ← must be > 0; prevents accidental ₹0 sales
+    Number.isSafeInteger(priceNumber) && priceNumber > 0 &&
     priceNumber <= sellerRemaining;
 
-  // ── Optimistic helpers ────────────────────────────────────────────────────
-  function runOptimistic<T>(
-    apply: () => T,
-    rollback: (snap: T) => void,
-    server: () => Promise<{ error: string | null }>,
-    errorTitle: string,
-  ) {
-    const snapshot = apply();
-    startTransition(async () => {
-      const r = await server();
-      if (r.error) {
-        rollback(snapshot);
-        toast({
-          variant: "destructive",
-          title: errorTitle,
-          description: r.error,
-        });
-      }
-    });
-  }
-
+  // Each click projects immediately; only durable writes wait their turn.
+  // Re-projecting pending commands over confirmed state prevents an older SOLD
+  // response or page refresh from replacing the next player already selected.
   function doPutOnBlock(playerId: string) {
-    runOptimistic(
-      () => {
-        const prev = state;
-        const next: AuctionState = {
-          ...state,
-          current_player_id: playerId,
-          current_bid: 0,
-          current_bidder_team_id: null,
-        };
-        setState(next);
-        broadcastState(next);
-        return prev;
-      },
-      (prev) => setState(prev),
+    const current = queue.getSnapshot();
+    if (current.data.state.current_player_id || current.recovering || current.error) return;
+    mutate(
+      (data) => ({ ...data, state: { ...data.state, current_player_id: playerId, current_bid: data.state.base_price, current_bidder_team_id: null } }),
       () => putPlayerOnBlock(playerId),
-      "Could not put player on block",
     );
   }
 
-  // ── Reserved random-pick players ────────────────────────────────────────────
-  // Some players must land at a specific point in the random draw, no matter
-  // how many times the auction is restarted. They are held back from every
-  // earlier random pick, then force-selected when their trigger is reached.
-  //
-  //   • Manikandan M  → fixed position 110 from the start
-  //   • Akhil Ravi    → "before the last 10": picked when 11 players remain,
-  //                      so exactly 10 come after him.
-  const digitsOf = (p: Player) => (p.phone ?? "").replace(/\D/g, "");
-  const matchManikandan = (p: Player) => digitsOf(p).endsWith("9645474152");
-  const matchAkhil = (p: Player) => {
-    const n = p.full_name.trim().toLowerCase();
-    return (
-      digitsOf(p).endsWith("9745560065") ||
-      (n.includes("akhil") && n.includes("ravi"))
-    );
-  };
-
-  const AKHIL_TAIL = 11; // trigger when this many (incl. Akhil) remain → 10 after
+  const plannedPlayerId = React.useRef<string | null>(null);
+  const nextCandidate = React.useMemo(() => {
+    const planned = fullPool.find((player) => player.id === plannedPlayerId.current);
+    if (planned) return planned;
+    const next = fullPool.length ? fullPool[Math.floor(Math.random() * fullPool.length)] : null;
+    plannedPlayerId.current = next?.id ?? null;
+    return next;
+  }, [fullPool]);
+  // Fetch the upcoming random pick's image while the current player is being
+  // auctioned. Full-resolution photos no longer start downloading on the click.
+  React.useEffect(() => {
+    const urls = [nextCandidate?.profile_picture_url, currentPlayer?.profile_picture_url].filter(Boolean) as string[];
+    const images = urls.map((url) => { const image = new window.Image(); image.src = url; return image; });
+    return () => { images.forEach((image) => { image.onload = null; }); };
+  }, [nextCandidate?.profile_picture_url, currentPlayer?.profile_picture_url]);
 
   function doPickRandom() {
-    if (currentPlayer) return;
-    if (fullPool.length === 0) {
+    if (queue.getSnapshot().data.state.current_player_id || blocked) return;
+    if (!nextCandidate) {
       toast({ variant: "destructive", title: "No eligible players left" });
       return;
     }
-
-    // Position from the start = already-auctioned count + 1 (the pick now).
-    const auctionedCount = players.filter(
-      (p) => p.status !== "Rejected" && p.sold_at,
-    ).length;
-    const position = auctionedCount + 1;
-
-    // Players still available to auction (equals fullPool here).
-    const remaining = fullPool.length;
-
-    const akhil = fullPool.find(matchAkhil);
-    const mani = fullPool.find(matchManikandan);
-
-    // 1) Akhil — force when we're down to the last 11 (10 will follow him).
-    //    Using <= so a manual pick that overshoots still triggers him.
-    if (akhil && remaining <= AKHIL_TAIL) {
-      doPutOnBlock(akhil.id);
-      return;
-    }
-
-    // 2) Manikandan — force at/after position 110 (only while not yet in
-    //    Akhil's tail window, which is handled above).
-    if (mani && position >= 110) {
-      doPutOnBlock(mani.id);
-      return;
-    }
-
-    // 3) Otherwise random, EXCLUDING any reserved player not yet due, so they
-    //    stay held back. Fallback to full pool if only reserved players remain.
-    const heldBack = new Set<string>();
-    if (akhil && remaining > AKHIL_TAIL) heldBack.add(akhil.id);
-    if (mani && position < 110) heldBack.add(mani.id);
-
-    let candidates = fullPool.filter((p) => !heldBack.has(p.id));
-    if (candidates.length === 0) candidates = fullPool;
-
-    const pick = candidates[Math.floor(Math.random() * candidates.length)];
-    doPutOnBlock(pick.id);
+    doPutOnBlock(nextCandidate.id);
   }
 
   function doSell() {
-    if (!currentPlayer || !selectedTeam) return;
-    if (!canSell) {
-      toast({
-        variant: "destructive",
-        title: "Cannot sell",
-        description: selectedTeam.is_locked
-          ? `${selectedTeam.name} is locked`
-          : priceNumber > sellerRemaining
-            ? `${selectedTeam.name} only has ₹${inr(sellerRemaining)} left`
-            : "Squad full or invalid price",
-      });
-      return;
-    }
-
-    const playerId = currentPlayer.id;
-    const teamId = selectedTeam.id;
+    if (!currentPlayer || !selectedTeam || !canSell || blocked) return;
+    // Guard double-clicks using the synchronous queue snapshot, not last render.
+    if (queue.getSnapshot().data.state.current_player_id !== currentPlayer.id) return;
+    const player = currentPlayer;
+    const team = selectedTeam;
     const price = priceNumber;
-    // Capture display values BEFORE we wipe currentPlayer/selectedTeam state.
-    const splashPayload = {
-      playerName: currentPlayer.full_name,
-      photo: currentPlayer.profile_picture_url,
-      role: currentPlayer.role,
-      teamName: selectedTeam.name,
-      teamColor: selectedTeam.color,
-      price,
-    };
-
-    // Fire server first; only broadcast SOLD splash if it succeeds. This
-    // prevents the public board from celebrating a sale that errored out.
-    // Local optimistic UI still updates immediately for the admin.
-    const snapshot = { state, players };
-    const nextState: AuctionState = {
-      ...state,
-      current_player_id: null,
-      current_bid: 0,
-      current_bidder_team_id: null,
-    };
-    setState(nextState);
-    broadcastState(nextState);
-    const updated: Player = {
-      ...currentPlayer,
-      team_id: teamId,
-      sold_price: price,
-      sold_at: new Date().toISOString(),
-    };
-    setPlayers((prev) => prev.map((p) => (p.id === playerId ? updated : p)));
-    broadcastPlayer(updated);
-
-    startTransition(async () => {
-      const r = await sellPlayer(playerId, teamId, price);
-      if (r.error) {
-        setState(snapshot.state);
-        setPlayers(snapshot.players);
-        toast({
-          variant: "destructive",
-          title: "SOLD failed — rolled back",
-          description: r.error,
-        });
-      } else {
-        // Only celebrate on a confirmed sale
-        broadcastSold(splashPayload);
-      }
-    });
+    const soldAt = new Date().toISOString();
+    mutate(
+      (data) => ({
+        ...data,
+        state: { ...data.state, current_player_id: null, current_bid: 0, current_bidder_team_id: null },
+        players: data.players.map((p) => p.id === player.id ? { ...p, team_id: team.id, sold_price: price, sold_at: soldAt } : p),
+      }),
+      () => sellPlayer(player.id, team.id, price),
+      () => send("sold", { playerId: player.id, playerName: player.full_name, photo: player.profile_picture_url, role: player.role, teamName: team.name, teamColor: team.color, price }),
+    );
   }
 
   function doMarkUnsold() {
-    if (!currentPlayer) return;
-    const playerId = currentPlayer.id;
-    runOptimistic(
-      () => {
-        const snapshot = { state, players };
-        const nextState: AuctionState = {
-          ...state,
-          current_player_id: null,
-          current_bid: 0,
-          current_bidder_team_id: null,
-        };
-        setState(nextState);
-        broadcastState(nextState);
-        const updated: Player = {
-          ...currentPlayer,
-          team_id: null,
-          sold_price: null,
-          sold_at: new Date().toISOString(),
-        };
-        setPlayers((prev) =>
-          prev.map((p) => (p.id === playerId ? updated : p)),
-        );
-        broadcastPlayer(updated);
-        return snapshot;
-      },
-      (snap) => {
-        setState(snap.state);
-        setPlayers(snap.players);
-      },
-      () => markUnsold(),
-      "Unsold failed",
+    const playerId = currentPlayer?.id;
+    if (!playerId || queue.getSnapshot().data.state.current_player_id !== playerId || blocked) return;
+    const soldAt = new Date().toISOString();
+    mutate(
+      (data) => ({ ...data,
+        state: { ...data.state, current_player_id: null, current_bid: 0, current_bidder_team_id: null },
+        players: data.players.map((p) => p.id === playerId ? { ...p, team_id: null, sold_price: null, sold_at: soldAt } : p),
+      }),
+      () => markUnsold(playerId),
     );
   }
 
   function doClearBlock() {
-    runOptimistic(
-      () => {
-        const prev = state;
-        const next: AuctionState = {
-          ...state,
-          current_player_id: null,
-          current_bid: 0,
-          current_bidder_team_id: null,
-        };
-        setState(next);
-        broadcastState(next);
-        return prev;
-      },
-      (prev) => setState(prev),
-      () => clearBlock(),
-      "Cancel failed",
+    const playerId = queue.getSnapshot().data.state.current_player_id;
+    if (!playerId || blocked) return;
+    mutate(
+      (data) => ({ ...data, state: { ...data.state, current_player_id: null, current_bid: 0, current_bidder_team_id: null } }),
+      () => clearBlock(playerId),
     );
   }
 
   function doRecallSale(playerId: string) {
-    runOptimistic(
-      () => {
-        const snapshot = players;
-        const original = players.find((p) => p.id === playerId);
-        if (original) {
-          const u: Player = {
-            ...original,
-            team_id: null,
-            sold_price: null,
-            sold_at: null,
-          };
-          setPlayers((prev) =>
-            prev.map((p) => (p.id === playerId ? u : p)),
-          );
-          broadcastPlayer(u);
-        }
-        return snapshot;
-      },
-      (snap) => setPlayers(snap),
+    if (blocked) return;
+    mutate(
+      (data) => ({ ...data, players: data.players.map((p) => p.id === playerId ? { ...p, team_id: null, sold_price: null, sold_at: null } : p) }),
       () => undoSale(playerId),
-      "Recall failed",
     );
   }
 
   function doRepoolUnsold() {
-    if (unsoldCount === 0) return;
-    const snapshot = players;
-    setPlayers((prev) =>
-      prev.map((p) =>
-        p.status !== "Rejected" && p.sold_at && !p.team_id
-          ? { ...p, sold_at: null }
-          : p,
-      ),
-    );
-    startTransition(async () => {
-      const r = await repoolUnsold();
-      if (r.error) {
-        setPlayers(snapshot);
-        toast({
-          variant: "destructive",
-          title: "Re-pool failed",
-          description: r.error,
-        });
-      } else {
-        // Bulk UPDATE — tell public displays to re-fetch (Realtime may
-        // rate-limit the burst of individual row events).
+    if (!unsoldCount || blocked) return;
+    mutate(
+      (data) => ({ ...data, players: data.players.map((p) => p.status !== "Rejected" && p.sold_at && !p.team_id ? { ...p, sold_at: null } : p) }),
+      () => repoolUnsold(),
+      (result) => {
         broadcastReload();
-        toast({
-          variant: "success",
-          title: `${r.count} unsold player${r.count === 1 ? "" : "s"} back in the pool`,
-        });
-      }
-    });
+        toast({ variant: "success", title: `${result.count ?? 0} unsold players back in the pool` });
+      },
+    );
   }
 
   // ── Keyboard shortcuts ─────────────────────────────────────────────────────
@@ -552,18 +420,27 @@ export function AuctionCockpit({
     confirmSaleOpen,
     teams,
     fullPool.length,
+    blocked,
+    nextCandidate,
   ]);
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_360px]">
+      {snapshot.error && <p role="alert" className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive lg:col-span-2">{snapshot.error}</p>}
       <div className="space-y-4">
         {/* Connection + manual resync — top of cockpit, always visible */}
         <div className="flex items-center justify-between rounded-md border border-border bg-card px-3 py-2">
-          <ConnectionIndicator status={conn} />
+          <div className="flex flex-wrap items-center gap-3">
+            <ConnectionIndicator status={conn} />
+            <span role="status" aria-live="polite" className="text-xs text-muted-foreground">
+              {snapshot.recovering ? "Restoring saved state…" : pending ? `Saving ${snapshot.pending} update${snapshot.pending === 1 ? "" : "s"}…` : snapshot.error ? "Resync required" : "All changes saved"}
+            </span>
+          </div>
           <Button
             variant="outline"
             size="sm"
-            onClick={() => router.refresh()}
+            onClick={() => void queue.resync()}
+            disabled={pending || snapshot.recovering}
             title="Force re-fetch from DB (use after a network blip)"
           >
             <RefreshCcw className="h-4 w-4" /> Resync
@@ -617,7 +494,7 @@ export function AuctionCockpit({
                     variant="secondary"
                     size="lg"
                     onClick={doPickRandom}
-                    disabled={fullPool.length === 0}
+                    disabled={blocked || fullPool.length === 0}
                   >
                     <Shuffle className="h-5 w-5" /> 🎲 Random pick (R)
                   </Button>
@@ -627,6 +504,7 @@ export function AuctionCockpit({
                       size="lg"
                       className="bg-white text-cricket-pitch hover:bg-white/90"
                       onClick={doRepoolUnsold}
+                      disabled={blocked}
                     >
                       <RefreshCw className="h-5 w-5" /> Re-pool {unsoldCount}{" "}
                       unsold
@@ -648,10 +526,11 @@ export function AuctionCockpit({
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-[180px_1fr]">
                 {/* Price input */}
                 <div>
-                  <label className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <label htmlFor="auction-sale-price" className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                     Final sale price (₹)
                   </label>
                   <Input
+                    id="auction-sale-price"
                     ref={priceInputRef}
                     type="number"
                     inputMode="numeric"
@@ -681,7 +560,7 @@ export function AuctionCockpit({
                         teamStats.get(t.id) ?? { count: 0, spent: 0 };
                       const remaining = t.budget_total - s.spent;
                       const isFull = s.count >= t.squad_size;
-                      const blocked = t.is_locked || isFull;
+                      const teamBlocked = blocked || t.is_locked || isFull;
                       const isSelected = selectedTeamId === t.id;
                       const hot = i < 9 ? i + 1 : null;
                       return (
@@ -689,7 +568,7 @@ export function AuctionCockpit({
                           key={t.id}
                           type="button"
                           onClick={() => setSelectedTeamId(t.id)}
-                          disabled={blocked}
+                          disabled={teamBlocked}
                           className={`group relative flex flex-col items-start gap-0.5 rounded-md border-2 px-2.5 py-1.5 text-left text-xs transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 ${
                             isSelected
                               ? "border-secondary bg-secondary/25 ring-2 ring-secondary/40"
@@ -700,7 +579,7 @@ export function AuctionCockpit({
                             borderLeftWidth: 6,
                           }}
                         >
-                          {hot && !blocked && (
+                          {hot && !teamBlocked && (
                             <span className="absolute right-1 top-1 rounded bg-muted px-1 py-0.5 text-[9px] font-mono font-semibold text-muted-foreground">
                               {hot}
                             </span>
@@ -747,10 +626,10 @@ export function AuctionCockpit({
                     </span>
                   )}
                 </Button>
-                <Button variant="outline" onClick={doMarkUnsold}>
+                <Button variant="outline" onClick={doMarkUnsold} disabled={blocked}>
                   Unsold (U)
                 </Button>
-                <Button variant="ghost" onClick={doClearBlock}>
+                <Button variant="ghost" onClick={doClearBlock} disabled={blocked}>
                   <RotateCcw className="h-4 w-4" /> Cancel (Esc)
                 </Button>
                 {pending && (
@@ -781,6 +660,7 @@ export function AuctionCockpit({
                   size="sm"
                   variant="outline"
                   onClick={doRepoolUnsold}
+                  disabled={blocked}
                   title="Bring unsold players back into the pool"
                 >
                   <RefreshCw className="h-4 w-4" /> Re-pool {unsoldCount}
@@ -791,7 +671,7 @@ export function AuctionCockpit({
                   size="sm"
                   variant="secondary"
                   onClick={doPickRandom}
-                  disabled={fullPool.length === 0}
+                  disabled={blocked || fullPool.length === 0}
                 >
                   <Shuffle className="h-4 w-4" /> Random
                 </Button>
@@ -822,7 +702,7 @@ export function AuctionCockpit({
                   <button
                     key={p.id}
                     onClick={() => doPutOnBlock(p.id)}
-                    disabled={!!currentPlayer}
+                    disabled={blocked || !!currentPlayer}
                     className="flex w-full items-center gap-3 rounded-md border border-border p-2 text-left transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {p.profile_picture_url ? (
@@ -963,6 +843,7 @@ export function AuctionCockpit({
                       size="icon"
                       title="Recall this sale (return to pool)"
                       onClick={() => doRecallSale(p.id)}
+                      disabled={blocked}
                       className="h-7 w-7"
                     >
                       <Undo2 className="h-3.5 w-3.5" />

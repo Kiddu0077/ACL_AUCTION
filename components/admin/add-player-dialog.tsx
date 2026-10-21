@@ -1,8 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useAsyncAction } from "@/lib/use-async-action";
 import { Loader2, UserPlus, Upload } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -28,6 +27,7 @@ import {
 import { useToast } from "@/components/ui/use-toast";
 import { adminAddPlayer } from "@/app/admin/actions";
 import { createClient } from "@/lib/supabase/browser";
+import { preparePlayerPhoto } from "@/lib/prepare-player-photo";
 import type { PlayerRole } from "@/lib/types/database";
 
 const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic"];
@@ -35,9 +35,8 @@ const MAX_BYTES = 5 * 1024 * 1024;
 
 export function AddPlayerDialog() {
   const { toast } = useToast();
-  const router = useRouter();
   const [open, setOpen] = React.useState(false);
-  const [pending, startTransition] = useTransition();
+  const [pending, runAction] = useAsyncAction();
 
   const [name, setName] = React.useState("");
   const [role, setRole] = React.useState<PlayerRole>("Batsman");
@@ -59,10 +58,14 @@ export function AddPlayerDialog() {
     const f = e.target.files?.[0];
     if (!f) return;
     if (!IMAGE_TYPES.includes(f.type)) {
+      e.target.value = "";
+      setPhoto(null);
       toast({ variant: "destructive", title: "Use JPG/PNG/WEBP/HEIC" });
       return;
     }
     if (f.size > MAX_BYTES) {
+      e.target.value = "";
+      setPhoto(null);
       toast({ variant: "destructive", title: "Image must be ≤ 5MB" });
       return;
     }
@@ -75,16 +78,17 @@ export function AddPlayerDialog() {
       toast({ variant: "destructive", title: "Name and city are required" });
       return;
     }
-    startTransition(async () => {
+    void runAction(async () => {
       let profile_picture_url: string | null = null;
       if (photo) {
+        const preparedPhoto = await preparePlayerPhoto(photo);
         const supabase = createClient();
         const slug = (s: string) =>
           s.toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/^-+|-+$/g, "");
-        const key = `admin-add/${Date.now()}-${slug(photo.name)}`;
+        const key = `admin-add/${crypto.randomUUID()}-${slug(preparedPhoto.name)}`;
         const { error: upErr } = await supabase.storage
           .from("profile-pictures")
-          .upload(key, photo, { contentType: photo.type, upsert: false });
+          .upload(key, preparedPhoto, { contentType: preparedPhoto.type, upsert: false });
         if (upErr) {
           toast({
             variant: "destructive",
@@ -114,13 +118,12 @@ export function AddPlayerDialog() {
       } else {
         toast({ variant: "success", title: `${name.trim()} added` });
         setOpen(false);
-        router.refresh();
       }
     });
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={(value) => { if (!pending) setOpen(value); }}>
       <DialogTrigger asChild>
         <Button
           size="sm"
@@ -136,8 +139,8 @@ export function AddPlayerDialog() {
               <UserPlus className="h-5 w-5" /> Add player manually
             </DialogTitle>
             <DialogDescription>
-              Public registration is closed. Use this to add a player directly
-              to the pool with Verified status. Photo &amp; phone are optional.
+              Add a player directly to the pool with Verified status.
+              Photo &amp; phone are optional for organizer entries.
             </DialogDescription>
           </DialogHeader>
 

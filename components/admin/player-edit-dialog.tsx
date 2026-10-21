@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useTransition } from "react";
+import { useAsyncAction } from "@/lib/use-async-action";
 import Image from "next/image";
 import { Loader2, Pencil, Upload } from "lucide-react";
 
@@ -28,6 +28,7 @@ import {
 import { useToast } from "@/components/ui/use-toast";
 import { updatePlayer } from "@/app/admin/actions";
 import { createClient } from "@/lib/supabase/browser";
+import { preparePlayerPhoto } from "@/lib/prepare-player-photo";
 import type { Player, PlayerRole } from "@/lib/types/database";
 
 const MAX_BYTES = 5 * 1024 * 1024;
@@ -36,7 +37,7 @@ const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic"];
 export function PlayerEditDialog({ player }: { player: Player }) {
   const { toast } = useToast();
   const [open, setOpen] = React.useState(false);
-  const [pending, startTransition] = useTransition();
+  const [pending, runAction] = useAsyncAction();
 
   const [fullName, setFullName] = React.useState(player.full_name);
   const [role, setRole] = React.useState<PlayerRole>(player.role);
@@ -45,9 +46,10 @@ export function PlayerEditDialog({ player }: { player: Player }) {
   const [newPhoto, setNewPhoto] = React.useState<File | null>(null);
   const [preview, setPreview] = React.useState<string | null>(null);
 
-  // Reset form to the player's values whenever the dialog re-opens.
-  React.useEffect(() => {
-    if (open) {
+  // Fresh values on opening, while background refreshes preserve draft edits.
+  function changeOpen(nextOpen: boolean) {
+    if (pending) return;
+    if (nextOpen) {
       setFullName(player.full_name);
       setRole(player.role);
       setPhone(player.phone ?? "");
@@ -55,16 +57,27 @@ export function PlayerEditDialog({ player }: { player: Player }) {
       setNewPhoto(null);
       setPreview(null);
     }
-  }, [open, player]);
+    setOpen(nextOpen);
+  }
+
+  React.useEffect(() => {
+    return () => { if (preview) URL.revokeObjectURL(preview); };
+  }, [preview]);
 
   function onPickPhoto(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
     if (!IMAGE_TYPES.includes(file.type)) {
+      e.target.value = "";
+      setNewPhoto(null);
+      setPreview(null);
       toast({ variant: "destructive", title: "Use a JPG, PNG, WEBP or HEIC image" });
       return;
     }
     if (file.size > MAX_BYTES) {
+      e.target.value = "";
+      setNewPhoto(null);
+      setPreview(null);
       toast({ variant: "destructive", title: "Image must be 5MB or smaller" });
       return;
     }
@@ -79,7 +92,7 @@ export function PlayerEditDialog({ player }: { player: Player }) {
       return;
     }
 
-    startTransition(async () => {
+    void runAction(async () => {
       const fields: Parameters<typeof updatePlayer>[1] = {
         full_name: fullName.trim(),
         role,
@@ -91,14 +104,15 @@ export function PlayerEditDialog({ player }: { player: Player }) {
 
       // Upload a replacement photo first, if one was chosen.
       if (newPhoto) {
+        const preparedPhoto = await preparePlayerPhoto(newPhoto);
         const supabase = createClient();
         const slug = (s: string) =>
           s.toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/^-+|-+$/g, "");
-        const key = `${player.id}/${Date.now()}-${slug(newPhoto.name)}`;
+        const key = `${player.id}/${crypto.randomUUID()}-${slug(preparedPhoto.name)}`;
         const { error: upErr } = await supabase.storage
           .from("profile-pictures")
-          .upload(key, newPhoto, {
-            contentType: newPhoto.type,
+          .upload(key, preparedPhoto, {
+            contentType: preparedPhoto.type,
             upsert: false,
           });
         if (upErr) {
@@ -132,7 +146,7 @@ export function PlayerEditDialog({ player }: { player: Player }) {
   const currentPhoto = preview ?? player.profile_picture_url;
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={changeOpen}>
       <DialogTrigger asChild>
         <Button variant="ghost" size="icon" aria-label={`Edit ${player.full_name}`}>
           <Pencil className="h-4 w-4" />
@@ -215,7 +229,7 @@ export function PlayerEditDialog({ player }: { player: Player }) {
                 inputMode="tel"
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
-                required
+                required={Boolean(player.phone)}
               />
             </div>
             <div className="sm:col-span-2">

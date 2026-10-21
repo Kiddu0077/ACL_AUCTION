@@ -1,4 +1,4 @@
--- ACL — Cricket League Player Registration
+-- Pudur Premier League — Player Registration
 -- Supabase schema: tables, enums, indexes, RLS policies, and storage buckets.
 --
 -- Apply this in the Supabase SQL editor (Dashboard > SQL Editor > New query)

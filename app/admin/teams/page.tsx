@@ -22,6 +22,7 @@ import { TeamDeleteButton } from "@/components/admin/team-delete-button";
 import { TeamShareLink } from "@/components/admin/team-share-link";
 import { TeamPurseControls } from "@/components/admin/team-purse-controls";
 import { createClient } from "@/lib/supabase/server";
+import { TOURNAMENT_NAME } from "@/lib/tournament";
 
 export const dynamic = "force-dynamic";
 
@@ -30,7 +31,7 @@ function inr(n: number) {
 }
 
 export default async function TeamsAdminPage() {
-  const supabase = createClient();
+  const supabase = await createClient();
 
   const [teamsRes, playersRes, stateRes] = await Promise.all([
     supabase.from("teams").select("*").order("name", { ascending: true }),
@@ -44,6 +45,9 @@ export default async function TeamsAdminPage() {
       .eq("id", "current")
       .single(),
   ]);
+  if (teamsRes.error || playersRes.error || stateRes.error) {
+    throw new Error("Could not load team budgets and squads. Please retry.");
+  }
 
   const teams = teamsRes.data ?? [];
   const players = playersRes.data ?? [];
@@ -63,6 +67,9 @@ export default async function TeamsAdminPage() {
       <header className="border-b bg-white">
         <div className="container flex flex-wrap items-center justify-between gap-3 py-4">
           <div>
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-primary">
+              {TOURNAMENT_NAME}
+            </p>
             <Link
               href="/admin/dashboard"
               className="mb-1 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"

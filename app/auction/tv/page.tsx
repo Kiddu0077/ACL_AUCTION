@@ -1,4 +1,6 @@
+import { PublicDataError } from "@/components/public-data-error";
 import { createClient } from "@/lib/supabase/server";
+import { TOURNAMENT_NAME } from "@/lib/tournament";
 import { AuctionLiveBoard } from "@/components/auction-live-board";
 import type { AuctionState, Player, Team } from "@/lib/types/database";
 
@@ -8,12 +10,14 @@ export const dynamic = "force-dynamic";
 // just the live board filling the screen. Open this on the big screen and
 // press F11 (or use the TV browser's fullscreen) for an edge-to-edge view.
 export default async function AuctionTvPage() {
-  const supabase = createClient();
+  const supabase = await createClient();
   const [playersRes, teamsRes, stateRes] = await Promise.all([
     supabase.from("players").select("*"),
     supabase.from("teams").select("*").order("name"),
     supabase.from("auction_state").select("*").eq("id", "current").single(),
   ]);
+
+  if (playersRes.error || teamsRes.error || stateRes.error) return <PublicDataError />;
 
   const players = (playersRes.data ?? []) as Player[];
   const teams = (teamsRes.data ?? []) as Team[];
@@ -29,11 +33,10 @@ export default async function AuctionTvPage() {
     updated_at: new Date().toISOString(),
   }) as AuctionState;
 
-  const tournament =
-    process.env.NEXT_PUBLIC_TOURNAMENT_NAME ?? "Cricket League";
+  const tournament = TOURNAMENT_NAME;
 
   return (
-    <main className="relative min-h-screen overflow-hidden bg-gradient-to-br from-slate-950 via-cricket-pitch to-blue-950">
+    <main className="relative min-h-screen overflow-hidden bg-gradient-to-br from-[#091b16] via-cricket-pitch to-[#102f25]">
       <div className="pointer-events-none absolute inset-0 opacity-[0.05] [background-image:radial-gradient(circle_at_2px_2px,white_1px,transparent_0)] [background-size:56px_56px]" />
       <div className="pointer-events-none absolute -left-40 top-1/4 h-[32rem] w-[32rem] rounded-full bg-secondary/15 blur-3xl" />
       <div className="pointer-events-none absolute -right-40 bottom-0 h-[36rem] w-[36rem] rounded-full bg-emerald-500/10 blur-3xl" />

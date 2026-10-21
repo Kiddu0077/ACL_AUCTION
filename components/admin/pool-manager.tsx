@@ -1,8 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { useTransition } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useAsyncAction } from "@/lib/use-async-action";
+import { useSearchParams } from "next/navigation";
 import { ArrowLeftRight, Dices, Loader2, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -33,7 +33,6 @@ import type { Team } from "@/lib/types/database";
 
 export function PoolManager({ teams }: { teams: Team[] }) {
   const { toast } = useToast();
-  const router = useRouter();
   const params = useSearchParams();
   // Edit affordances are ON by default now — the auctioneer needs the
   // swap/clear/unassigned tools visible during a live draw.
@@ -42,7 +41,7 @@ export function PoolManager({ teams }: { teams: Team[] }) {
   const recordMode = params.get("record") === "1";
   const editMode = !recordMode || params.get("edit") === "1";
 
-  const [pending, startTransition] = useTransition();
+  const [pending, runAction] = useAsyncAction();
   const [genDialog, setGenDialog] = React.useState(false);
 
   const poolA = teams.filter((t) => t.pool === "A");
@@ -50,7 +49,7 @@ export function PoolManager({ teams }: { teams: Team[] }) {
   const unassigned = teams.filter((t) => t.pool === null);
 
   function run(label: string, fn: () => Promise<{ error: string | null }>) {
-    startTransition(async () => {
+    void runAction(async () => {
       const r = await fn();
       if (r.error) {
         toast({
@@ -63,7 +62,6 @@ export function PoolManager({ teams }: { teams: Team[] }) {
         // many teams at once and Realtime can rate-limit the burst.
         broadcastReload();
         toast({ variant: "success", title: label });
-        router.refresh();
       }
     });
   }

@@ -1,48 +1,14 @@
 "use client";
 
-import * as React from "react";
-
-import { createClient } from "@/lib/supabase/browser";
-import { AUCTION_CHANNEL } from "@/lib/realtime/broadcast";
+import { usePublicLiveData } from "@/components/use-public-live-data";
+import { ConnectionIndicator } from "@/components/connection-indicator";
 import { contrastText } from "@/lib/utils";
 import type { Team } from "@/lib/types/database";
 
 export function PublicPools({ initialTeams }: { initialTeams: Team[] }) {
-  const [teams, setTeams] = React.useState(initialTeams);
-
-  // Live updates if the admin tweaks pools
-  React.useEffect(() => {
-    const supabase = createClient();
-    // Two channels: postgres_changes (per-row updates) + AUCTION_CHANNEL
-    // broadcast for bulk "reload" signals sent after Restart / Draw / Clear.
-    const pg = supabase
-      .channel("pools-live")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "teams" },
-        (payload) => {
-          if (payload.eventType === "UPDATE" && payload.new) {
-            const u = payload.new as Team;
-            setTeams((prev) => prev.map((t) => (t.id === u.id ? u : t)));
-          }
-        },
-      )
-      .subscribe();
-    const bc = supabase
-      .channel(AUCTION_CHANNEL)
-      .on("broadcast", { event: "reload" }, async () => {
-        const { data } = await supabase
-          .from("teams")
-          .select("*")
-          .order("name");
-        if (data) setTeams(data as Team[]);
-      })
-      .subscribe();
-    return () => {
-      supabase.removeChannel(pg);
-      supabase.removeChannel(bc);
-    };
-  }, []);
+  const { teams, connection, syncError } = usePublicLiveData({
+    channelName: "pools-live", initialTeams,
+  });
 
   const poolA = teams.filter((t) => t.pool === "A");
   const poolB = teams.filter((t) => t.pool === "B");
@@ -51,7 +17,9 @@ export function PublicPools({ initialTeams }: { initialTeams: Team[] }) {
   if (!drawn) {
     return (
       <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-border bg-white p-10 text-center shadow-sm">
-        <div className="text-6xl">🎲</div>
+        <ConnectionIndicator status={connection} />
+        {syncError && <p role="status" className="text-sm text-amber-700">Latest updates are temporarily unavailable. Reconnecting automatically.</p>}
+        <div className="text-6xl" aria-hidden="true">🎲</div>
         <h2 className="text-2xl font-bold text-cricket-pitch sm:text-3xl">
           Pool draw pending
         </h2>
@@ -63,9 +31,13 @@ export function PublicPools({ initialTeams }: { initialTeams: Team[] }) {
   }
 
   return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:gap-6">
-      <PoolCard label="Pool A" accent="#0ea5e9" teams={poolA} />
-      <PoolCard label="Pool B" accent="#ef4444" teams={poolB} />
+    <div className="space-y-4">
+      <ConnectionIndicator status={connection} />
+      {syncError && <p role="status" className="text-sm text-amber-700">Latest updates are temporarily unavailable. Reconnecting automatically.</p>}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:gap-6">
+        <PoolCard label="Pool A" accent="#0ea5e9" teams={poolA} />
+        <PoolCard label="Pool B" accent="#ef4444" teams={poolB} />
+      </div>
     </div>
   );
 }

@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/use-toast";
 import { createClient } from "@/lib/supabase/browser";
+import { getAdminDestination } from "@/lib/admin-navigation";
 
 export function LoginForm() {
   const router = useRouter();
@@ -17,27 +18,33 @@ export function LoginForm() {
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [loading, setLoading] = React.useState(false);
+  const submitting = React.useRef(false);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (submitting.current) return;
+    submitting.current = true;
     setLoading(true);
-    const supabase = createClient();
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-    setLoading(false);
-    if (error) {
+    try {
+      const supabase = createClient();
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+      if (error) throw error;
+
+      // A single navigation fetches the authenticated page. Refreshing the
+      // login route at the same time duplicates requests and races redirects.
+      router.replace(getAdminDestination(params.get("next")));
+    } catch (error) {
+      submitting.current = false;
+      setLoading(false);
       toast({
         variant: "destructive",
         title: "Sign-in failed",
-        description: error.message,
+        description: error instanceof Error ? error.message : "Please try again.",
       });
-      return;
     }
-    const next = params.get("next") || "/admin/dashboard";
-    router.push(next);
-    router.refresh();
   }
 
   return (

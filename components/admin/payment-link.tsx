@@ -5,26 +5,33 @@ import { ExternalLink } from "lucide-react";
 
 import { getPaymentSignedUrl } from "@/app/admin/actions";
 import { useToast } from "@/components/ui/use-toast";
+import { useAsyncAction } from "@/lib/use-async-action";
 
 export function PaymentLink({ path }: { path: string | null }) {
   const { toast } = useToast();
-  const [loading, setLoading] = React.useState(false);
+  const [loading, runAction] = useAsyncAction();
 
   if (!path) return <span className="text-xs text-muted-foreground">—</span>;
 
-  async function open() {
-    setLoading(true);
-    const res = await getPaymentSignedUrl(path!);
-    setLoading(false);
-    if (res.error || !res.url) {
-      toast({
-        variant: "destructive",
-        title: "Could not load screenshot",
-        description: res.error ?? "Unknown error",
-      });
-      return;
-    }
-    window.open(res.url, "_blank", "noopener,noreferrer");
+  function open() {
+    void runAction(async () => {
+      // Open during the click event; opening after a network await is blocked
+      // as an unsolicited popup by many mobile browsers.
+      const popup = window.open("about:blank", "_blank");
+      if (!popup) {
+        toast({ variant: "destructive", title: "Allow pop-ups to view the screenshot" });
+        return;
+      }
+      popup.opener = null;
+      try {
+        const res = await getPaymentSignedUrl(path!);
+        if (res.error || !res.url) throw new Error(res.error ?? "Screenshot unavailable");
+        popup.location.replace(res.url);
+      } catch (error) {
+        popup.close();
+        throw error;
+      }
+    });
   }
 
   return (

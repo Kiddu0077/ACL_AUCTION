@@ -4,32 +4,38 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { requireAuthenticatedClient } from "@/lib/supabase/auth";
+import { adminPlayerSchema } from "@/lib/validations/admin";
 import type { PlayerStatus } from "@/lib/types/database";
 
 async function requireAuth() {
-  const supabase = createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  return user;
+  try {
+    return (await requireAuthenticatedClient()).userId;
+  } catch (error) {
+    if (error instanceof Error && error.message === "Unauthorized") return null;
+    throw error;
+  }
 }
 
 export async function updatePlayerStatus(id: string, status: PlayerStatus) {
+  if (!["Pending", "Verified", "Rejected"].includes(status)) return { error: "Invalid player status" };
   const user = await requireAuth();
   if (!user) return { error: "Not authenticated" };
 
-  const supabase = createClient();
+  const supabase = await createClient();
   const { error } = await supabase
     .from("players")
     .update({ status })
-    .eq("id", id);
+    .eq("id", id)
+    .select("id")
+    .single();
   if (error) return { error: error.message };
   revalidatePath("/admin/dashboard");
   return { error: null };
 }
 
 // Manually add a player from the admin dashboard — bypasses the public
-// /register form (which is closed). Uses the service-role client so the
+// /register form. Uses the service-role client so the
 // row can be inserted with the "Verified" status directly, skipping the
 // anon RLS policy that limits inserts to status='Pending'.
 export async function adminAddPlayer(input: {
@@ -42,9 +48,9 @@ export async function adminAddPlayer(input: {
   const user = await requireAuth();
   if (!user) return { error: "Not authenticated" };
 
-  const name = input.full_name.trim();
-  const city = input.city.trim();
-  if (!name || !city) return { error: "Name and city are required" };
+  const parsed = adminPlayerSchema.safeParse(input);
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const { full_name: name, city } = parsed.data;
 
   const admin = createAdminClient();
   const { error } = await admin.from("players").insert({
@@ -80,8 +86,11 @@ export async function updatePlayer(
   const user = await requireAuth();
   if (!user) return { error: "Not authenticated" };
 
-  const supabase = createClient();
-  const { error } = await supabase.from("players").update(fields).eq("id", id);
+  const supabase = await createClient();
+  const parsed = adminPlayerSchema.partial().safeParse(fields);
+  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  if (!Object.keys(parsed.data).length) return { error: "No player changes supplied" };
+  const { error } = await supabase.from("players").update(parsed.data).eq("id", id).select("id").single();
   if (error) {
     // Phone uniqueness collision
     if (error.code === "23505" || /phone/i.test(error.message)) {
@@ -96,14 +105,17 @@ export async function updatePlayer(
 }
 
 export async function togglePaid(id: string, paid: boolean) {
+  if (typeof paid !== "boolean") return { error: "Invalid payment setting" };
   const user = await requireAuth();
   if (!user) return { error: "Not authenticated" };
 
-  const supabase = createClient();
+  const supabase = await createClient();
   const { error } = await supabase
     .from("players")
     .update({ paid_at: paid ? new Date().toISOString() : null })
-    .eq("id", id);
+    .eq("id", id)
+    .select("id")
+    .single();
   if (error) return { error: error.message };
   revalidatePath("/admin/dashboard");
   return { error: null };
@@ -139,16 +151,18 @@ export async function deletePlayer(id: string) {
       : null;
   })();
 
-  if (profilePath) {
-    await admin.storage.from("profile-pictures").remove([profilePath]);
-  }
-  if (player?.payment_screenshot_url) {
-    await admin.storage
-      .from("payment-screenshots")
-      .remove([player.payment_screenshot_url]);
-  }
+  const cleanup = await Promise.all([
+    ...(profilePath ? [admin.storage.from("profile-pictures").remove([profilePath])] : []),
+    ...(player?.payment_screenshot_url
+      ? [admin.storage.from("payment-screenshots").remove([player.payment_screenshot_url])]
+      : []),
+  ]);
+  const cleanupError = cleanup.find((result) => result.error)?.error;
+  if (cleanupError) return { error: `Photo cleanup failed: ${cleanupError.message}. Please retry deletion.` };
 
-  const { error: deleteErr } = await admin.from("players").delete().eq("id", id);
+  const { error: deleteErr } = await admin.from("players").delete().eq("id", id)
+    .select("id")
+    .single();
   if (deleteErr) return { error: deleteErr.message };
 
   revalidatePath("/admin/dashboard");
@@ -156,7 +170,7 @@ export async function deletePlayer(id: string) {
 }
 
 export async function signOut() {
-  const supabase = createClient();
+  const supabase = await createClient();
   await supabase.auth.signOut();
   redirect("/admin/login");
 }
@@ -165,7 +179,7 @@ export async function getPaymentSignedUrl(path: string) {
   const user = await requireAuth();
   if (!user) return { error: "Not authenticated", url: null };
 
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data, error } = await supabase.storage
     .from("payment-screenshots")
     .createSignedUrl(path, 60 * 5); // 5-minute signed URL

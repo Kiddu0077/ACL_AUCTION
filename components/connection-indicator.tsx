@@ -45,7 +45,7 @@ export function ConnectionIndicator({
           ? "Realtime connected — bids and sales sync instantly"
           : status === "connecting"
             ? "Reconnecting to realtime — updates will resume shortly"
-            : "Realtime disconnected. Refresh once network is back."
+            : "Realtime disconnected. Updates will reconnect when the network returns."
       }
     >
       <span className="relative flex h-2 w-2">

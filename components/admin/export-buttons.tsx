@@ -4,7 +4,10 @@ import * as React from "react";
 import { Download, FileText, Presentation } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/components/ui/use-toast";
 import type { Player } from "@/lib/types/database";
+import { TOURNAMENT_NAME, TOURNAMENT_SLUG } from "@/lib/tournament";
+import { prepareExportPhoto } from "@/lib/prepare-export-photo";
 
 const COLUMNS = [
   "Full name",
@@ -26,30 +29,28 @@ function asRows(players: Player[]) {
   ]);
 }
 
-// Convert an image URL to a base64 data URI (PowerPoint needs base64-embedded
-// images so the .pptx is self-contained when opened offline).
+// PowerPoint gets a bounded square JPEG with the original aspect ratio
+// letterboxed inside it, so portraits neither stretch nor crop faces.
 async function imageToDataUri(url: string | null): Promise<string | null> {
   if (!url) return null;
   try {
-    const res = await fetch(url, { mode: "cors" });
+    const res = await fetch(url, { mode: "cors", signal: AbortSignal.timeout(12000) });
     if (!res.ok) return null;
-    const blob = await res.blob();
-    return await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
+    return await prepareExportPhoto(await res.blob());
   } catch {
     return null;
   }
 }
 
 export function ExportButtons({ players }: { players: Player[] }) {
+  const { toast } = useToast();
+  const busyRef = React.useRef(false);
   const [busy, setBusy] = React.useState<null | "xlsx" | "pdf" | "ppt">(null);
   const [pptProgress, setPptProgress] = React.useState(0);
 
   async function exportXlsx() {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy("xlsx");
     try {
       const XLSX = await import("xlsx");
@@ -57,20 +58,25 @@ export function ExportButtons({ players }: { players: Player[] }) {
       ws["!cols"] = COLUMNS.map(() => ({ wch: 18 }));
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Players");
-      XLSX.writeFile(wb, `acl-players-${new Date().toISOString().slice(0, 10)}.xlsx`);
+      XLSX.writeFile(wb, `${TOURNAMENT_SLUG}-players-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    } catch (error) {
+      showExportError(error);
     } finally {
+      busyRef.current = false;
       setBusy(null);
     }
   }
 
   async function exportPdf() {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy("pdf");
     try {
       const { default: jsPDF } = await import("jspdf");
       const autoTable = (await import("jspdf-autotable")).default;
       const doc = new jsPDF({ orientation: "landscape" });
       doc.setFontSize(14);
-      doc.text("ACL — Player Registrations", 14, 14);
+      doc.text(`${TOURNAMENT_NAME} — Player Registrations`, 14, 14);
       doc.setFontSize(10);
       doc.text(`Generated ${new Date().toLocaleString()}`, 14, 20);
       autoTable(doc, {
@@ -78,31 +84,35 @@ export function ExportButtons({ players }: { players: Player[] }) {
         head: [COLUMNS],
         body: asRows(players),
         styles: { fontSize: 9 },
-        headStyles: { fillColor: [30, 58, 138] },
+        headStyles: { fillColor: [19, 57, 43] },
       });
-      doc.save(`acl-players-${new Date().toISOString().slice(0, 10)}.pdf`);
+      doc.save(`${TOURNAMENT_SLUG}-players-${new Date().toISOString().slice(0, 10)}.pdf`);
+    } catch (error) {
+      showExportError(error);
     } finally {
+      busyRef.current = false;
       setBusy(null);
     }
   }
 
   async function exportPpt() {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy("ppt");
     setPptProgress(0);
     try {
       const PptxGenJS = (await import("pptxgenjs")).default;
       const pptx = new PptxGenJS();
       pptx.layout = "LAYOUT_WIDE"; // 13.33 x 7.5 in
-      const tournament =
-        process.env.NEXT_PUBLIC_TOURNAMENT_NAME ?? "Cricket League";
+      const tournament = TOURNAMENT_NAME;
       pptx.title = `${tournament} — Players`;
       pptx.subject = "Player roster";
 
       // Theme colors
-      const NAVY = "1E3A8A";
-      const NAVY_DARK = "0F1E47";
-      const YELLOW = "FBBF24";
-      const TEAL = "5EEAD4";
+      const FOREST = "13392B";
+      const FOREST_DARK = "091B16";
+      const LIME = "D3F36B";
+      const MINT = "B8DCC4";
       const WHITE = "FFFFFF";
       const ROLE_BADGE: Record<string, string> = {
         Batsman: "EF4444",
@@ -110,18 +120,23 @@ export function ExportButtons({ players }: { players: Player[] }) {
         "All-rounder": "F59E0B",
       };
 
-      // Pre-fetch all photos in parallel (faster than serial slide-by-slide).
-      const photos = await Promise.all(
-        players.map(async (p, i) => {
-          const uri = await imageToDataUri(p.profile_picture_url);
-          setPptProgress(Math.round(((i + 1) / players.length) * 80));
-          return uri;
-        }),
-      );
+      // Keep downloads parallel without flooding a mobile connection with
+      // hundreds of requests. Count completed photos so progress never regresses.
+      const photos: (string | null)[] = Array(players.length).fill(null);
+      let nextPhoto = 0;
+      let completed = 0;
+      await Promise.all(Array.from({ length: Math.min(6, players.length) }, async () => {
+        while (nextPhoto < players.length) {
+          const index = nextPhoto++;
+          photos[index] = await imageToDataUri(players[index].profile_picture_url);
+          completed += 1;
+          setPptProgress(Math.round((completed / players.length) * 80));
+        }
+      }));
 
       players.forEach((p, idx) => {
         const slide = pptx.addSlide();
-        slide.background = { color: NAVY };
+        slide.background = { color: FOREST };
 
         // Decorative diagonal accent (top-left)
         slide.addShape(pptx.ShapeType.rtTriangle, {
@@ -129,8 +144,8 @@ export function ExportButtons({ players }: { players: Player[] }) {
           y: 0,
           w: 4,
           h: 1.6,
-          fill: { color: NAVY_DARK },
-          line: { color: NAVY_DARK },
+          fill: { color: FOREST_DARK },
+          line: { color: FOREST_DARK },
         });
 
         // Tournament header
@@ -151,18 +166,18 @@ export function ExportButtons({ players }: { players: Player[] }) {
           y: 0.35,
           w: 2.7,
           h: 0.85,
-          fill: { color: YELLOW },
-          line: { color: YELLOW },
+          fill: { color: LIME },
+          line: { color: LIME },
           rectRadius: 0.1,
         });
         slide.addText("PLAYER", {
           x: 10.3, y: 0.35, w: 2.7, h: 0.42,
-          fontSize: 14, bold: true, color: NAVY,
+          fontSize: 14, bold: true, color: FOREST,
           align: "center", valign: "bottom",
         });
         slide.addText("REGISTRATION", {
           x: 10.3, y: 0.77, w: 2.7, h: 0.42,
-          fontSize: 11, bold: true, color: NAVY,
+          fontSize: 11, bold: true, color: FOREST,
           align: "center", valign: "top",
         });
 
@@ -173,7 +188,7 @@ export function ExportButtons({ players }: { players: Player[] }) {
           w: 6,
           h: 0.4,
           fontSize: 12,
-          color: TEAL,
+          color: MINT,
           fontFace: "Calibri",
           bold: true,
         });
@@ -181,7 +196,7 @@ export function ExportButtons({ players }: { players: Player[] }) {
         // Left column: info rows
         const labelOpts = {
           fontSize: 11,
-          color: TEAL,
+          color: MINT,
           bold: true,
           fontFace: "Calibri",
         } as const;
@@ -200,7 +215,7 @@ export function ExportButtons({ players }: { players: Player[] }) {
 
         // ROLE — with colored pill
         slide.addText("ROLE", { x: 0.5, y: 3.35, w: 6, h: 0.35, ...labelOpts });
-        const roleColor = ROLE_BADGE[p.role] ?? YELLOW;
+        const roleColor = ROLE_BADGE[p.role] ?? LIME;
         slide.addShape(pptx.ShapeType.roundRect, {
           x: 0.5,
           y: 3.7,
@@ -223,20 +238,20 @@ export function ExportButtons({ players }: { players: Player[] }) {
           x: 0.5, y: 5.05, w: 6.5, h: 0.85, ...valueOpts,
         });
 
-        // Right side: square photo with yellow frame — using `contain` so the
+        // Right side: square photo with lime frame — using `contain` so the
         // entire image fits inside the frame (no face cropping)
         const photoSize = 4.2;
         const photoX = 8.5;
         const photoY = 2.0;
 
-        // Yellow frame
+        // Lime frame
         slide.addShape(pptx.ShapeType.rect, {
           x: photoX - 0.12,
           y: photoY - 0.12,
           w: photoSize + 0.24,
           h: photoSize + 0.24,
-          fill: { color: YELLOW },
-          line: { color: YELLOW },
+          fill: { color: LIME },
+          line: { color: LIME },
         });
 
         // White inner backdrop so letterbox space looks intentional
@@ -265,7 +280,7 @@ export function ExportButtons({ players }: { players: Player[] }) {
             w: photoSize,
             h: photoSize,
             fontSize: 14,
-            color: NAVY,
+            color: FOREST,
             align: "center",
             valign: "middle",
             fontFace: "Calibri",
@@ -279,7 +294,7 @@ export function ExportButtons({ players }: { players: Player[] }) {
           w: 12.5,
           h: 0.3,
           fontSize: 9,
-          color: TEAL,
+          color: MINT,
           italic: true,
           align: "center",
           fontFace: "Calibri",
@@ -287,12 +302,23 @@ export function ExportButtons({ players }: { players: Player[] }) {
       });
 
       setPptProgress(95);
-      const fileName = `acl-players-${new Date().toISOString().slice(0, 10)}.pptx`;
+      const fileName = `${TOURNAMENT_SLUG}-players-${new Date().toISOString().slice(0, 10)}.pptx`;
       await pptx.writeFile({ fileName });
+    } catch (error) {
+      showExportError(error);
     } finally {
+      busyRef.current = false;
       setBusy(null);
       setPptProgress(0);
     }
+  }
+
+  function showExportError(error: unknown) {
+    toast({
+      variant: "destructive",
+      title: "Export failed",
+      description: error instanceof Error ? error.message : "Please try again.",
+    });
   }
 
   const empty = players.length === 0;

@@ -2,8 +2,8 @@ import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import type { Database } from "@/lib/types/database";
 
-export function createClient() {
-  const cookieStore = cookies();
+export async function createClient() {
+  const cookieStore = await cookies();
 
   return createServerClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -21,8 +21,8 @@ export function createClient() {
               cookieStore.set(name, value, options),
             );
           } catch {
-            // Calling `set` from a Server Component is a no-op in Next 14;
-            // the middleware refreshes the session instead.
+            // Server Components cannot set cookies. Middleware refreshes the
+            // session and writes cookies before those components render.
           }
         },
       },

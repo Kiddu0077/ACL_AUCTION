@@ -1,5 +1,16 @@
+import { fileURLToPath } from "node:url";
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  outputFileTracingRoot: fileURLToPath(new URL(".", import.meta.url)),
+  experimental: {
+    // Auction mutations update live clients without re-rendering whole routes.
+    // Fetch fresh dynamic pages on navigation instead of reusing a 30s snapshot.
+    staleTimes: { dynamic: 0 },
+  },
+  async redirects() {
+    return [{ source: "/register", destination: "/pudurleague_registration", permanent: true }];
+  },
   images: {
     // Bypass Vercel's Image Optimization proxy — we hit the free-tier quota
     // and it returns HTTP 402 for every subsequent request, breaking all

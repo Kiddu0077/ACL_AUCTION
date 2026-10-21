@@ -51,12 +51,12 @@ const config: Config = {
           foreground: "hsl(var(--popover-foreground))",
         },
         cricket: {
-          pitch: "#1e3a8a",
+          pitch: "#103c32",
           ball: "#dc2626",
           stump: "#fbbf24",
           field: "#15803d",
         },
-        // Indian tricolor + team-jersey palette for the ICL theme
+        // Retained utility aliases used by the auction components.
         saffron: "#FF9933",
         "india-green": "#138808",
         "chakra-blue": "#000080",

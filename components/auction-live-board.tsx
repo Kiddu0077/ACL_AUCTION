@@ -6,6 +6,8 @@ import Image from "next/image";
 import { createClient } from "@/lib/supabase/browser";
 import { AUCTION_CHANNEL } from "@/lib/realtime/broadcast";
 import { contrastText } from "@/lib/utils";
+import { upsertLiveRow } from "@/lib/realtime/rows";
+import { createAuctionStateOrder, type StateMessage } from "@/lib/realtime/auction-state-order";
 import {
   ConnectionIndicator,
   realtimeStatus,
@@ -27,6 +29,10 @@ export function AuctionLiveBoard({
   initialTeams: Team[];
 }) {
   const [state, setState] = React.useState(initialState);
+  const [stateOrder] = React.useState(() => createAuctionStateOrder(initialState));
+  const [syncError, setSyncError] = React.useState(false);
+  React.useEffect(() => setState(stateOrder.database(initialState)), [initialState, stateOrder]);
+  React.useEffect(() => setPlayers(initialPlayers), [initialPlayers]);
   const [players, setPlayers] = React.useState(initialPlayers);
   // Teams must be stateful too — admin can change budget/lock/squad_size
   // mid-auction (bonus purse, deduct, reset, lock/unlock). Without this
@@ -37,6 +43,7 @@ export function AuctionLiveBoard({
 
   // SOLD celebration splash
   type SoldSplash = {
+    playerId?: string;
     playerName: string;
     photo: string | null;
     role: string;
@@ -62,51 +69,67 @@ export function AuctionLiveBoard({
   React.useEffect(() => {
     const supabase = createClient();
 
+    let disposed = false;
+    let refreshing = false;
+    let refreshAgain = false;
+    let revision = 0;
+    async function refresh() {
+      if (disposed || document.visibilityState !== "visible") return;
+      if (refreshing) { refreshAgain = true; return; }
+      refreshing = true;
+      const startedAtRevision = revision;
+      try {
+        const signal = AbortSignal.timeout(10000);
+        const [p, t, s] = await Promise.all([
+          supabase.from("players").select("*").abortSignal(signal),
+          supabase.from("teams").select("*").order("name").abortSignal(signal),
+          supabase.from("auction_state").select("*").eq("id", "current").abortSignal(signal).single(),
+        ]);
+        if (p.error || t.error || s.error || !s.data) throw new Error("Could not synchronize");
+        if (!disposed && revision === startedAtRevision) {
+          setPlayers(p.data ?? []);
+          setTeams(t.data ?? []);
+          setState(stateOrder.database(s.data));
+          setSyncError(false);
+        } else if (!disposed) {
+          refreshAgain = true;
+        }
+      } catch { if (!disposed) setSyncError(true); }
+      finally {
+        refreshing = false;
+        if (refreshAgain && !disposed) { refreshAgain = false; void refresh(); }
+      }
+    }
     const broadcast = supabase
       .channel(AUCTION_CHANNEL)
       .on("broadcast", { event: "state" }, (msg) => {
-        const s = (msg.payload as { state?: AuctionState })?.state;
-        if (s) setState(s);
-      })
-      .on("broadcast", { event: "player" }, (msg) => {
-        const u = (msg.payload as { player?: Player })?.player;
-        if (!u) return;
-        setPlayers((prev) =>
-          prev.some((p) => p.id === u.id)
-            ? prev.map((p) => (p.id === u.id ? u : p))
-            : [...prev, u],
-        );
-      })
-      .on("broadcast", { event: "sold" }, (msg) => {
-        const s = msg.payload as SoldSplash | undefined;
-        if (!s?.playerName) return;
-        setSoldSplash(s);
-        if (splashTimer.current) clearTimeout(splashTimer.current);
-        splashTimer.current = setTimeout(() => setSoldSplash(null), 2000);
-      })
-      .on("broadcast", { event: "reload" }, async () => {
-        // Full re-fetch — after bulk mutations (Restart, Re-pool) where
-        // individual postgres_changes events may have been rate-limited.
-        try {
-          const [pRes, tRes, sRes] = await Promise.all([
-            supabase.from("players").select("*"),
-            supabase.from("teams").select("*").order("name"),
-            supabase
-              .from("auction_state")
-              .select("*")
-              .eq("id", "current")
-              .single(),
-          ]);
-          if (pRes.data) setPlayers(pRes.data as Player[]);
-          if (tRes.data) setTeams(tRes.data as Team[]);
-          if (sRes.data) setState(sRes.data as AuctionState);
-        } catch {
-          /* connection issue — will heal on next event */
+        const next = stateOrder.broadcast(msg.payload as StateMessage<AuctionState>);
+        setState(next);
+        if (next.current_player_id) {
+          setSoldSplash(null);
+          if (splashTimer.current) clearTimeout(splashTimer.current);
         }
       })
+      .on("broadcast", { event: "player" }, (msg) => {
+        const player = (msg.payload as { player?: Player })?.player;
+        if (player?.id && player.updated_at) {
+          revision += 1;
+          setPlayers((prev) => upsertLiveRow(prev, player));
+        }
+      })
+      .on("broadcast", { event: "sold" }, (msg) => {
+        const sale = msg.payload as SoldSplash | undefined;
+        const active = stateOrder.get().current_player_id;
+        if (!sale?.playerName || (active && active !== sale.playerId)) return;
+        setSoldSplash(sale);
+        if (splashTimer.current) clearTimeout(splashTimer.current);
+        splashTimer.current = setTimeout(() => setSoldSplash(null), 1200);
+      })
+      .on("broadcast", { event: "reload" }, () => { revision += 1; void refresh(); })
       .subscribe((status) => {
         connBroadcast.current = realtimeStatus(status);
         mergeConn();
+        if (status === "SUBSCRIBED") void refresh();
       });
 
     const pgChanges = supabase
@@ -116,7 +139,9 @@ export function AuctionLiveBoard({
         { event: "*", schema: "public", table: "auction_state" },
         (payload) => {
           if (payload.eventType === "UPDATE" && payload.new) {
-            setState(payload.new as AuctionState);
+            const next = stateOrder.database(payload.new as AuctionState);
+            setState(next);
+            if (next.current_player_id) setSoldSplash(null);
           }
         },
       )
@@ -124,11 +149,12 @@ export function AuctionLiveBoard({
         "postgres_changes",
         { event: "*", schema: "public", table: "players" },
         (payload) => {
+          revision += 1;
           if (payload.eventType === "UPDATE" && payload.new) {
             const u = payload.new as Player;
-            setPlayers((prev) => prev.map((p) => (p.id === u.id ? u : p)));
+            setPlayers((prev) => upsertLiveRow(prev, u));
           } else if (payload.eventType === "INSERT" && payload.new) {
-            setPlayers((prev) => [...prev, payload.new as Player]);
+            setPlayers((prev) => upsertLiveRow(prev, payload.new as Player));
           } else if (payload.eventType === "DELETE" && payload.old) {
             const id = (payload.old as { id?: string }).id;
             if (id) setPlayers((prev) => prev.filter((p) => p.id !== id));
@@ -139,15 +165,12 @@ export function AuctionLiveBoard({
         "postgres_changes",
         { event: "*", schema: "public", table: "teams" },
         (payload) => {
+          revision += 1;
           if (payload.eventType === "UPDATE" && payload.new) {
             const u = payload.new as Team;
-            setTeams((prev) =>
-              prev.some((t) => t.id === u.id)
-                ? prev.map((t) => (t.id === u.id ? u : t))
-                : [...prev, u],
-            );
+            setTeams((prev) => upsertLiveRow(prev, u));
           } else if (payload.eventType === "INSERT" && payload.new) {
-            setTeams((prev) => [...prev, payload.new as Team]);
+            setTeams((prev) => upsertLiveRow(prev, payload.new as Team));
           } else if (payload.eventType === "DELETE" && payload.old) {
             const id = (payload.old as { id?: string }).id;
             if (id) setTeams((prev) => prev.filter((t) => t.id !== id));
@@ -157,14 +180,26 @@ export function AuctionLiveBoard({
       .subscribe((status) => {
         connPg.current = realtimeStatus(status);
         mergeConn();
+        if (status === "SUBSCRIBED") void refresh();
       });
 
+    const recoverPreview = setInterval(() => {
+      if (stateOrder.expire()) { setState(stateOrder.get()); void refresh(); }
+    }, 1000);
+    const safetyRefresh = setInterval(() => { if (!stateOrder.pending()) void refresh(); }, 30000);
+    window.addEventListener("online", refresh);
+    document.addEventListener("visibilitychange", refresh);
     return () => {
-      supabase.removeChannel(broadcast);
-      supabase.removeChannel(pgChanges);
+      disposed = true;
+      clearInterval(recoverPreview);
+      clearInterval(safetyRefresh);
+      window.removeEventListener("online", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+      void supabase.removeChannel(broadcast);
+      void supabase.removeChannel(pgChanges);
       if (splashTimer.current) clearTimeout(splashTimer.current);
     };
-  }, []);
+  }, [mergeConn, stateOrder]);
 
   const currentPlayer = state.current_player_id
     ? players.find((p) => p.id === state.current_player_id)
@@ -198,11 +233,12 @@ export function AuctionLiveBoard({
 
   return (
     <>
-      {/* SOLD celebration splash */}
+      {syncError && <p role="status" className="mb-3 rounded-lg bg-amber-100 px-4 py-2 text-sm text-amber-900">Connection interrupted. Showing the last received update; reconnecting automatically…</p>}
+      {/* A celebration never blocks the next player's panel. */}
       {soldSplash && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="pointer-events-none fixed bottom-4 right-4 z-50 w-[min(360px,calc(100vw-2rem))] animate-in fade-in duration-150">
           <div
-            className="relative mx-4 flex w-full max-w-2xl flex-col items-center gap-4 rounded-3xl border-4 p-6 text-center shadow-2xl animate-in zoom-in-90 duration-300 sm:p-10"
+            className="relative flex w-full flex-col items-center gap-2 rounded-2xl border-2 p-4 text-center shadow-2xl"
             style={{
               borderColor: soldSplash.teamColor ?? "#fbbf24",
               background:
@@ -211,7 +247,7 @@ export function AuctionLiveBoard({
           >
             <div className="animate-in slide-in-from-top-4 zoom-in-75 duration-300">
               <span
-                className="inline-block -rotate-6 rounded-xl border-4 px-6 py-2 text-4xl font-black uppercase tracking-widest shadow-lg sm:text-6xl"
+                className="inline-block -rotate-6 rounded-xl border-4 px-4 py-1 text-2xl font-black uppercase tracking-widest shadow-lg"
                 style={{
                   borderColor: soldSplash.teamColor ?? "#fbbf24",
                   color: soldSplash.teamColor ?? "#fbbf24",
@@ -227,13 +263,13 @@ export function AuctionLiveBoard({
                 alt={soldSplash.playerName}
                 width={200}
                 height={200}
-                className="h-32 w-32 rounded-2xl border-4 bg-white/10 object-contain shadow-xl sm:h-40 sm:w-40"
+                className="h-16 w-16 rounded-xl border-2 bg-white/10 object-contain shadow-xl"
                 style={{ borderColor: soldSplash.teamColor ?? "#fbbf24" }}
               />
             )}
 
             <div className="text-white">
-              <p className="text-2xl font-black uppercase sm:text-4xl">
+              <p className="text-lg font-black uppercase">
                 {soldSplash.playerName}
               </p>
               <p className="mt-1 text-xs uppercase tracking-widest text-blue-200">
@@ -254,7 +290,7 @@ export function AuctionLiveBoard({
               >
                 {soldSplash.teamName}
               </span>
-              <span className="mt-1 text-3xl font-black tabular-nums text-secondary sm:text-5xl">
+              <span className="mt-1 text-2xl font-black tabular-nums text-secondary">
                 ₹{inr(soldSplash.price)}
               </span>
             </div>

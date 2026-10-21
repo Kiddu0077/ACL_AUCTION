@@ -21,7 +21,7 @@ function colorFor(name: string) {
 }
 
 function initials(name: string) {
-  const parts = name.trim().split(/\s+/);
+  const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "?";
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + (parts[parts.length - 1][0] ?? "")).toUpperCase();
@@ -48,8 +48,8 @@ export function PlayerAvatar({
   className?: string;
   style?: React.CSSProperties;
 }) {
-  const [failed, setFailed] = React.useState(false);
-  const hasSrc = Boolean(src) && !failed;
+  const [failedSrc, setFailedSrc] = React.useState<string | null>(null);
+  const hasSrc = Boolean(src) && failedSrc !== src;
 
   if (!hasSrc) {
     return (
@@ -76,7 +76,7 @@ export function PlayerAvatar({
       style={style}
       loading="lazy"
       decoding="async"
-      onError={() => setFailed(true)}
+      onError={() => setFailedSrc(src ?? null)}
     />
   );
 }

@@ -1,9 +1,9 @@
 "use client";
 
 import * as React from "react";
-import { useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useAsyncAction } from "@/lib/use-async-action";
 import Image from "next/image";
+import Link from "next/link";
 import { Loader2, Plus, Trash2, ArrowRightLeft, IndianRupee } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -37,17 +37,15 @@ export function SquadManager({
   players: Player[];
 }) {
   const { toast } = useToast();
-  const router = useRouter();
-  const [pending, startTransition] = useTransition();
+  const [pending, runAction] = useAsyncAction();
 
   function run(label: string, fn: () => Promise<{ error: string | null }>) {
-    startTransition(async () => {
+    void runAction(async () => {
       const r = await fn();
       if (r.error) {
         toast({ variant: "destructive", title: label, description: r.error });
       } else {
         toast({ variant: "success", title: label });
-        router.refresh();
       }
     });
   }
@@ -133,9 +131,9 @@ export function SquadManager({
       {teams.length === 0 && (
         <p className="py-10 text-center text-muted-foreground">
           No teams yet. Add teams first in{" "}
-          <a href="/admin/teams" className="font-medium text-primary underline">
+          <Link href="/admin/teams" className="font-medium text-primary underline">
             Teams
-          </a>
+          </Link>
           .
         </p>
       )}
@@ -160,6 +158,9 @@ function SquadRow({
 }) {
   const [editing, setEditing] = React.useState(false);
   const [price, setPrice] = React.useState(String(player.sold_price ?? 0));
+  React.useEffect(() => {
+    if (!editing) setPrice(String(player.sold_price ?? 0));
+  }, [player.sold_price, editing]);
 
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-md border border-border p-2">
@@ -192,7 +193,7 @@ function SquadRow({
           />
           <Button
             size="sm"
-            disabled={pending}
+            disabled={pending || price.trim() === "" || !Number.isFinite(Number(price)) || Number(price) < 0}
             onClick={() => {
               onEditPrice(Number(price));
               setEditing(false);
@@ -206,6 +207,7 @@ function SquadRow({
         </div>
       ) : (
         <button
+          disabled={pending}
           onClick={() => setEditing(true)}
           className="inline-flex items-center gap-1 rounded bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-800 hover:bg-emerald-200"
           title="Edit price"
@@ -267,6 +269,9 @@ function AssignRow({
 }) {
   const [playerId, setPlayerId] = React.useState("");
   const [price, setPrice] = React.useState(String(basePrice));
+  React.useEffect(() => {
+    if (playerId && !available.some((player) => player.id === playerId)) setPlayerId("");
+  }, [available, playerId]);
 
   return (
     <div className="flex flex-wrap items-end gap-2 rounded-md border border-dashed border-border bg-muted/30 p-2">
@@ -276,6 +281,7 @@ function AssignRow({
         </label>
         <select
           value={playerId}
+          disabled={pending}
           onChange={(e) => setPlayerId(e.target.value)}
           className="mt-0.5 h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
         >
@@ -297,7 +303,7 @@ function AssignRow({
       />
       <Button
         size="sm"
-        disabled={pending || !playerId}
+        disabled={pending || !playerId || price.trim() === "" || !Number.isFinite(Number(price)) || Number(price) < 0}
         onClick={() => {
           if (!playerId) return;
           onAssign(playerId, Number(price) || 0);

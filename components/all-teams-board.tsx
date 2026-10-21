@@ -1,13 +1,13 @@
 "use client";
 
 import * as React from "react";
-import Image from "next/image";
+import { PlayerAvatar } from "@/components/player-avatar";
 import { Phone, MessageCircle } from "lucide-react";
 
-import { createClient } from "@/lib/supabase/browser";
-import { AUCTION_CHANNEL } from "@/lib/realtime/broadcast";
+import { usePublicLiveData } from "@/components/use-public-live-data";
+import { ConnectionIndicator } from "@/components/connection-indicator";
 import { contrastText } from "@/lib/utils";
-import type { AuctionState, Player, Team } from "@/lib/types/database";
+import type { Player, Team } from "@/lib/types/database";
 
 function inr(n: number) {
   return new Intl.NumberFormat("en-IN").format(n);
@@ -31,56 +31,9 @@ export function AllTeamsBoard({
   initialTeams: Team[];
   initialPlayers: Player[];
 }) {
-  const teams = initialTeams;
-  const [players, setPlayers] = React.useState(initialPlayers);
-
-  // Live updates so the page reflects the auction as it completes.
-  React.useEffect(() => {
-    const supabase = createClient();
-
-    const broadcast = supabase
-      .channel(AUCTION_CHANNEL)
-      .on("broadcast", { event: "player" }, (msg) => {
-        const u = (msg.payload as { player?: Player })?.player;
-        if (!u) return;
-        setPlayers((prev) => {
-          const exists = prev.some((p) => p.id === u.id);
-          if (exists) return prev.map((p) => (p.id === u.id ? u : p));
-          return [...prev, u];
-        });
-      })
-      .on("broadcast", { event: "reload" }, async () => {
-        const { data } = await supabase.from("players").select("*");
-        if (data) setPlayers(data as Player[]);
-      })
-      .subscribe();
-
-    const pgChanges = supabase
-      .channel("all-teams")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "players" },
-        (payload) => {
-          if (payload.eventType === "UPDATE" && payload.new) {
-            const u = payload.new as Player;
-            setPlayers((prev) =>
-              prev.map((p) => (p.id === u.id ? u : p)),
-            );
-          } else if (payload.eventType === "INSERT" && payload.new) {
-            setPlayers((prev) => [...prev, payload.new as Player]);
-          } else if (payload.eventType === "DELETE" && payload.old) {
-            const id = (payload.old as { id?: string }).id;
-            if (id) setPlayers((prev) => prev.filter((p) => p.id !== id));
-          }
-        },
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(broadcast);
-      supabase.removeChannel(pgChanges);
-    };
-  }, []);
+  const { teams, players, connection, syncError } = usePublicLiveData({
+    channelName: "all-teams", initialTeams, initialPlayers,
+  });
 
   const byTeam = React.useMemo(() => {
     const m = new Map<string, Player[]>();
@@ -106,6 +59,8 @@ export function AllTeamsBoard({
 
   return (
     <div className="space-y-6">
+      <ConnectionIndicator status={connection} />
+      {syncError && <p role="status" className="text-sm text-amber-700">Latest updates are temporarily unavailable. Reconnecting automatically.</p>}
       <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
         {teams.map((t) => {
           const roster = byTeam.get(t.id) ?? [];
@@ -164,11 +119,9 @@ export function AllTeamsBoard({
                         {i + 1}
                       </span>
                       {p.profile_picture_url ? (
-                        <Image
+                        <PlayerAvatar
                           src={p.profile_picture_url}
-                          alt={p.full_name}
-                          width={40}
-                          height={40}
+                          name={p.full_name}
                           className="h-10 w-10 flex-shrink-0 rounded-md bg-muted object-contain"
                         />
                       ) : (

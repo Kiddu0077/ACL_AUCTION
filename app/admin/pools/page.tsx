@@ -2,17 +2,19 @@ import Link from "next/link";
 import { ArrowLeft, Layers } from "lucide-react";
 
 import { createClient } from "@/lib/supabase/server";
+import { TOURNAMENT_NAME } from "@/lib/tournament";
 import { PoolManager } from "@/components/admin/pool-manager";
 import type { Team } from "@/lib/types/database";
 
 export const dynamic = "force-dynamic";
 
 export default async function PoolsAdminPage() {
-  const supabase = createClient();
-  const { data } = await supabase
+  const supabase = await createClient();
+  const { data, error } = await supabase
     .from("teams")
     .select("*")
     .order("name");
+  if (error) throw new Error("Could not load pools. Please retry.");
   const teams = (data ?? []) as Team[];
 
   return (
@@ -20,6 +22,9 @@ export default async function PoolsAdminPage() {
       <header className="border-b bg-white">
         <div className="container flex flex-wrap items-center justify-between gap-2 py-4">
           <div>
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-primary">
+              {TOURNAMENT_NAME}
+            </p>
             <Link
               href="/admin/dashboard"
               className="mb-1 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"

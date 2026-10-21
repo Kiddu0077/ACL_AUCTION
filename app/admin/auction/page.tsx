@@ -7,17 +7,21 @@ import { AuctionSettingsDialog } from "@/components/admin/auction-settings-dialo
 import { AuctionLifecycle } from "@/components/admin/auction-lifecycle";
 import { RestartAuctionButton } from "@/components/admin/restart-auction-button";
 import { createClient } from "@/lib/supabase/server";
+import { TOURNAMENT_NAME } from "@/lib/tournament";
 import type { AuctionState, Player, Team } from "@/lib/types/database";
 
 export const dynamic = "force-dynamic";
 
 export default async function AuctionAdminPage() {
-  const supabase = createClient();
+  const supabase = await createClient();
   const [playersRes, teamsRes, stateRes] = await Promise.all([
     supabase.from("players").select("*").order("full_name"),
     supabase.from("teams").select("*").order("name"),
     supabase.from("auction_state").select("*").eq("id", "current").single(),
   ]);
+  if (playersRes.error || teamsRes.error || stateRes.error) {
+    throw new Error("Could not load the auction. Please retry.");
+  }
 
   const players = (playersRes.data ?? []) as Player[];
   const teams = (teamsRes.data ?? []) as Team[];
@@ -28,6 +32,9 @@ export default async function AuctionAdminPage() {
       <header className="border-b bg-white">
         <div className="container flex flex-wrap items-center justify-between gap-3 py-4">
           <div>
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-primary">
+              {TOURNAMENT_NAME}
+            </p>
             <Link
               href="/admin/dashboard"
               className="mb-1 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
@@ -58,7 +65,7 @@ export default async function AuctionAdminPage() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {state && (
-              <AuctionLifecycle status={state.status} currentState={state} />
+              <AuctionLifecycle status={state.status} />
             )}
             <Link
               href="/admin/squads"

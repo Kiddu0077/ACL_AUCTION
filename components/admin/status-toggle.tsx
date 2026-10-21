@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useTransition } from "react";
+import { useAsyncAction } from "@/lib/use-async-action";
 import { Loader2 } from "lucide-react";
 
 import {
@@ -31,14 +31,15 @@ export function StatusToggle({
   name?: string;
 }) {
   const { toast } = useToast();
-  const [pending, startTransition] = useTransition();
+  const [pending, runAction] = useAsyncAction();
   const [local, setLocal] = React.useState<PlayerStatus>(status);
+  React.useEffect(() => setLocal(status), [status]);
 
   function onChange(next: string) {
     const target = next as PlayerStatus;
     const prev = local;
-    setLocal(target);
-    startTransition(async () => {
+    void runAction(async () => {
+      setLocal(target);
       const result = await updatePlayerStatus(id, target);
       if (result.error) {
         setLocal(prev);
@@ -53,7 +54,7 @@ export function StatusToggle({
           title: name ? `${name} → ${target}` : `Marked ${target}`,
         });
       }
-    });
+    }, () => setLocal(prev));
   }
 
   return (

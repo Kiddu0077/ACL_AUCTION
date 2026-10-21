@@ -6,8 +6,7 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: [
-    // Run on everything except static assets and image optimization
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
-  ],
+  // Public pages do not need an authenticated session. Keep every admin
+  // request (including Server Actions and prefetches) protected.
+  matcher: ["/admin/:path*"],
 };

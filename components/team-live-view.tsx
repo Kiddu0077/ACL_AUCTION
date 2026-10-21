@@ -1,10 +1,10 @@
 "use client";
 
 import * as React from "react";
-import Image from "next/image";
+import { PlayerAvatar } from "@/components/player-avatar";
 
-import { createClient } from "@/lib/supabase/browser";
-import { AUCTION_CHANNEL } from "@/lib/realtime/broadcast";
+import { usePublicLiveData } from "@/components/use-public-live-data";
+import { ConnectionIndicator } from "@/components/connection-indicator";
 import { contrastText } from "@/lib/utils";
 import type { AuctionState, Player, Team } from "@/lib/types/database";
 
@@ -13,7 +13,7 @@ function inr(n: number) {
 }
 
 export function TeamLiveView({
-  team,
+  team: initialTeam,
   initialPlayers,
   initialState,
 }: {
@@ -21,93 +21,26 @@ export function TeamLiveView({
   initialPlayers: Player[];
   initialState: AuctionState | null;
 }) {
-  const [players, setPlayers] = React.useState(initialPlayers);
-  const [state, setState] = React.useState(initialState);
-
-  // Subscribe to live updates — anyone with this link sees their team's
-  // roster update in real time as the auction runs.
-  // Two channels: instant broadcast (fast path) + postgres_changes (fallback).
-  React.useEffect(() => {
-    const supabase = createClient();
-
-    const broadcast = supabase
-      .channel(AUCTION_CHANNEL)
-      .on("broadcast", { event: "state" }, (msg) => {
-        const s = (msg.payload as { state?: AuctionState })?.state;
-        if (s) setState(s);
-      })
-      .on("broadcast", { event: "player" }, (msg) => {
-        const u = (msg.payload as { player?: Player })?.player;
-        if (!u) return;
-        setPlayers((prev) => {
-          const exists = prev.some((p) => p.id === u.id);
-          if (exists) return prev.map((p) => (p.id === u.id ? u : p));
-          return [...prev, u];
-        });
-      })
-      .on("broadcast", { event: "reload" }, async () => {
-        const [pRes, sRes] = await Promise.all([
-          supabase.from("players").select("*"),
-          supabase
-            .from("auction_state")
-            .select("*")
-            .eq("id", "current")
-            .single(),
-        ]);
-        if (pRes.data) setPlayers(pRes.data as Player[]);
-        if (sRes.data) setState(sRes.data as AuctionState);
-      })
-      .subscribe();
-
-    const pgChanges = supabase
-      .channel(`team-${team.id}`)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "players" },
-        (payload) => {
-          if (payload.eventType === "UPDATE" && payload.new) {
-            const u = payload.new as Player;
-            setPlayers((prev) => {
-              const exists = prev.some((p) => p.id === u.id);
-              if (exists) return prev.map((p) => (p.id === u.id ? u : p));
-              return [...prev, u];
-            });
-          } else if (payload.eventType === "INSERT" && payload.new) {
-            setPlayers((prev) => [...prev, payload.new as Player]);
-          } else if (payload.eventType === "DELETE" && payload.old) {
-            const id = (payload.old as { id?: string }).id;
-            if (id) setPlayers((prev) => prev.filter((p) => p.id !== id));
-          }
-        },
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "auction_state" },
-        (payload) => {
-          if (payload.eventType === "UPDATE" && payload.new) {
-            setState(payload.new as AuctionState);
-          }
-        },
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(broadcast);
-      supabase.removeChannel(pgChanges);
-    };
-  }, [team.id]);
+  const { teams, players, state, connection, syncError } = usePublicLiveData({
+    channelName: `team-${initialTeam.id}`, initialTeams: [initialTeam], initialPlayers, initialState,
+  });
+  const team = teams.find((item) => item.id === initialTeam.id);
 
   const myPlayers = React.useMemo(
     () =>
       players
-        .filter((p) => p.team_id === team.id)
+        .filter((p) => p.team_id === initialTeam.id)
         .sort((a, b) => (b.sold_at ?? "").localeCompare(a.sold_at ?? "")),
-    [players, team.id],
+    [players, initialTeam.id],
   );
+
+  if (!team) {
+    return <p role="status" className="rounded-xl border bg-card p-8 text-center">This team is no longer part of the tournament.</p>;
+  }
 
   const spent = myPlayers.reduce((sum, p) => sum + (p.sold_price ?? 0), 0);
   const remaining = team.budget_total - spent;
-  const pct = Math.max(0, Math.min(100, (spent / team.budget_total) * 100));
+  const pct = team.budget_total > 0 ? Math.max(0, Math.min(100, (spent / team.budget_total) * 100)) : 0;
 
   const isBlockMine = state?.current_bidder_team_id === team.id;
   const currentPlayer =
@@ -118,6 +51,8 @@ export function TeamLiveView({
 
   return (
     <div className="space-y-4">
+      <ConnectionIndicator status={connection} />
+      {syncError && <p role="status" className="text-sm text-amber-700">Latest updates are temporarily unavailable. Reconnecting automatically.</p>}
       {/* Hero — text color auto-contrasts with the team color */}
       <div
         className="overflow-hidden rounded-xl border-4 shadow-lg"
@@ -128,7 +63,7 @@ export function TeamLiveView({
         }}
       >
         <div className="p-6">
-          <div className="flex items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <p className="text-xs font-bold uppercase tracking-widest opacity-80">
                 {team.short_name ?? "TEAM"}
@@ -173,11 +108,9 @@ export function TeamLiveView({
       {isBlockMine && currentPlayer && (
         <div className="flex items-center gap-3 rounded-md border-2 border-secondary bg-secondary/20 p-3">
           {currentPlayer.profile_picture_url && (
-            <Image
+            <PlayerAvatar
               src={currentPlayer.profile_picture_url}
-              alt={currentPlayer.full_name}
-              width={56}
-              height={56}
+              name={currentPlayer.full_name}
               className="h-14 w-14 rounded-md bg-white object-contain"
             />
           )}
@@ -219,11 +152,9 @@ export function TeamLiveView({
                   {i + 1}
                 </span>
                 {p.profile_picture_url ? (
-                  <Image
+                  <PlayerAvatar
                     src={p.profile_picture_url}
-                    alt={p.full_name}
-                    width={48}
-                    height={48}
+                    name={p.full_name}
                     className="h-12 w-12 rounded-md bg-muted object-contain"
                   />
                 ) : (

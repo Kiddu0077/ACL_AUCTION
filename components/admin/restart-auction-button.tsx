@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useTransition } from "react";
+import { useAuctionManagementAction } from "@/lib/auction/use-management-action";
 import { Loader2, RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,7 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/use-toast";
 import { restartAuction } from "@/app/admin/auction-actions";
 import { broadcastReload } from "@/lib/realtime/broadcast-client";
+import { isAuctionBusy, useAuctionBusy } from "@/lib/auction/activity";
 
 const CONFIRM_WORD = "RESTART";
 
@@ -27,10 +28,12 @@ export function RestartAuctionButton() {
   const { toast } = useToast();
   const [open, setOpen] = React.useState(false);
   const [confirm, setConfirm] = React.useState("");
-  const [pending, startTransition] = useTransition();
+  const [pending, runAction] = useAuctionManagementAction();
+  const auctionBusy = useAuctionBusy();
 
   function handleRestart() {
-    startTransition(async () => {
+    if (isAuctionBusy() || confirm !== CONFIRM_WORD) return;
+    void runAction(async () => {
       const r = await restartAuction();
       if (r.error) {
         toast({
@@ -58,12 +61,13 @@ export function RestartAuctionButton() {
     <Dialog
       open={open}
       onOpenChange={(o) => {
+        if (pending) return;
         setOpen(o);
         if (!o) setConfirm("");
       }}
     >
       <DialogTrigger asChild>
-        <Button variant="outline" size="sm" className="text-destructive hover:text-destructive">
+        <Button variant="outline" size="sm" disabled={auctionBusy} title={auctionBusy ? "Wait for the current auction changes to finish saving." : undefined} className="text-destructive hover:text-destructive">
           <RefreshCw className="h-4 w-4" /> Restart auction
         </Button>
       </DialogTrigger>
@@ -72,10 +76,11 @@ export function RestartAuctionButton() {
           <DialogTitle className="text-destructive">
             Restart the entire auction?
           </DialogTitle>
-          <DialogDescription className="space-y-2">
+          <DialogDescription asChild>
+            <div className="space-y-2">
             <span className="block">This will:</span>
             <ul className="ml-4 list-disc space-y-1 text-sm">
-              <li>Clear every regular player's team assignment and sold price</li>
+              <li>Clear every regular player&apos;s team assignment and sold price</li>
               <li>Return all auctioned players to the pool</li>
               <li>Clear the current player on the block</li>
             </ul>
@@ -85,6 +90,7 @@ export function RestartAuctionButton() {
               stay on their teams).
             </span>
             <span className="block">This cannot be undone.</span>
+            </div>
           </DialogDescription>
         </DialogHeader>
 
@@ -112,7 +118,8 @@ export function RestartAuctionButton() {
           <Button
             variant="destructive"
             onClick={handleRestart}
-            disabled={pending || confirm !== CONFIRM_WORD}
+            disabled={pending || auctionBusy || confirm !== CONFIRM_WORD}
+            title={auctionBusy ? "Wait for the current auction changes to finish saving." : undefined}
           >
             {pending && <Loader2 className="h-4 w-4 animate-spin" />}
             Restart auction

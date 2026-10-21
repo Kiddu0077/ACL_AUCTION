@@ -39,11 +39,11 @@ function getChannel(): RealtimeChannel {
 
 export function broadcastAuctionState(state: AuctionState) {
   try {
-    getChannel().send({
+    void getChannel().send({
       type: "broadcast",
       event: "state",
       payload: { state },
-    });
+    }).catch(() => undefined);
   } catch {
     // Best-effort — the postgres_changes fallback will still catch it.
   }
@@ -51,11 +51,11 @@ export function broadcastAuctionState(state: AuctionState) {
 
 export function broadcastReload() {
   try {
-    getChannel().send({
+    void getChannel().send({
       type: "broadcast",
       event: "reload",
       payload: { ts: 0 }, // recipient re-fetches; payload content not used
-    });
+    }).catch(() => undefined);
   } catch {
     // Best-effort — the postgres_changes fallback will still catch it.
   }
