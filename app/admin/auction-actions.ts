@@ -327,9 +327,8 @@ export async function createIconPlayer(input: {
   if (!nonnegativeInteger.safeParse(input.sold_price).success) return { error: "Invalid price" };
   const { full_name: name, city } = parsed.data;
 
-  // Service-role client: the public RLS insert policy only allows new rows
-  // with status='Pending' (for the registration form). Icon players are
-  // created Verified + pre-assigned, so we bypass RLS here (admin-only action).
+  // Icon players are pre-assigned by an admin. Use the service-role client
+  // because public registration cannot set team or auction fields.
   const supabase = createAdminClient();
   const allocation = await checkTeamAllocation(supabase, input.team_id, input.sold_price, undefined, true);
   if (allocation.error) return allocation;
@@ -340,7 +339,6 @@ export async function createIconPlayer(input: {
     phone: input.phone?.trim() || null,
     profile_picture_url: input.profile_picture_url ?? null,
     is_icon: true,
-    status: "Verified",
     team_id: input.team_id,
     sold_price: Math.max(0, Math.floor(input.sold_price || 0)),
     sold_at: new Date().toISOString(),

@@ -99,8 +99,6 @@ export function RegistrationForm() {
         phone: values.phone,
         city: values.city,
         profile_picture_url: profile.publicUrl,
-        // Payment details are recorded by admins after the auction.
-        status: "Pending",
       });
       if (insertErr) {
         if (insertErr.code === "23505" && /phone/i.test(insertErr.message)) {
@@ -111,7 +109,7 @@ export function RegistrationForm() {
       }
 
       uploadedProfile.current = null;
-      toast({ variant: "success", title: "Registration submitted", description: "Your details have been received for review." });
+      toast({ variant: "success", title: "Registration complete", description: "You’re registered for the tournament." });
       setSubmitted(true);
       reset();
     } catch (err) {
@@ -131,7 +129,7 @@ export function RegistrationForm() {
         </span>
         <h3 className="text-2xl font-bold tracking-tight">You’re on the list!</h3>
         <p className="max-w-sm text-sm leading-relaxed text-[#12352b]/70">
-          Your {TOURNAMENT_NAME} registration has been received and is pending review.
+          Your {TOURNAMENT_NAME} registration is complete.
         </p>
         <Button asChild className="mt-2 w-full rounded-xl bg-[#12352b] text-white hover:bg-[#204d3e]">
           <Link href="/players">View players <ArrowRight aria-hidden="true" /></Link>
@@ -207,7 +205,7 @@ export function RegistrationForm() {
         {isSubmitting ? submissionStage : "Submit registration"}
         {!isSubmitting && <ArrowRight aria-hidden="true" />}
       </Button>
-      <p className="text-center text-xs leading-relaxed text-[#12352b]/55">Your details go to the tournament organisers for review.</p>
+      <p className="text-center text-xs leading-relaxed text-[#12352b]/55">Your details will be shared with the tournament organisers.</p>
     </form>
   );
 }

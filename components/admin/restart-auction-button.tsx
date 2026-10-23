@@ -85,7 +85,7 @@ export function RestartAuctionButton() {
               <li>Clear the current player on the block</li>
             </ul>
             <span className="block font-semibold">
-              Kept intact: teams, team budgets, registrations, payment status,
+              Kept intact: teams, team budgets, registrations,
               and <span className="text-secondary">★ icon players</span> (they
               stay on their teams).
             </span>

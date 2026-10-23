@@ -1,8 +1,11 @@
 -- Pudur Premier League — Player Registration
 -- Supabase schema: tables, enums, indexes, RLS policies, and storage buckets.
 --
--- Apply this in the Supabase SQL editor (Dashboard > SQL Editor > New query)
--- or via the Supabase CLI: `supabase db push`.
+-- New database: run this base schema in the Supabase SQL editor, then apply
+-- every supabase/migrations/*.sql file in filename order. Those migrations add
+-- the auction tables/columns. The CLI does not apply schema.sql automatically.
+-- Existing database: apply only unapplied migrations; 0009 removes the retired
+-- approval/payment fields without deleting player rows or stored receipts.
 --
 -- Idempotent where practical: re-running should not error on existing objects.
 
@@ -18,10 +21,6 @@ do $$ begin
   create type player_role as enum ('Batsman', 'Bowler', 'All-rounder');
 exception when duplicate_object then null; end $$;
 
-do $$ begin
-  create type player_status as enum ('Pending', 'Verified', 'Rejected');
-exception when duplicate_object then null; end $$;
-
 -- ─────────────────────────────────────────────────────────────────────────────
 -- players table
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -32,24 +31,12 @@ create table if not exists public.players (
   phone                  text not null check (phone ~ '^[+0-9 \-]{7,20}$'),
   city                   text not null check (char_length(city) between 2 and 80),
   profile_picture_url    text,
-  payment_screenshot_url text,
-  utr_number             text check (utr_number is null or char_length(utr_number) between 6 and 30),
-  status                 player_status not null default 'Pending',
-  paid_at                timestamptz,
   created_at             timestamptz   not null default now(),
   updated_at             timestamptz   not null default now()
 );
 
-create index if not exists players_status_idx     on public.players (status);
 create index if not exists players_created_at_idx on public.players (created_at desc);
 create index if not exists players_phone_idx      on public.players (phone);
-create index if not exists players_paid_at_idx    on public.players (paid_at) where paid_at is not null;
-
--- One UTR per registration. Partial index: many NULLs allowed, but every
--- non-null UTR must be unique across the table.
-create unique index if not exists players_utr_number_unique
-  on public.players (utr_number)
-  where utr_number is not null;
 
 -- Keep updated_at fresh on row updates
 create or replace function public.set_updated_at() returns trigger as $$
@@ -63,19 +50,6 @@ drop trigger if exists players_set_updated_at on public.players;
 create trigger players_set_updated_at
   before update on public.players
   for each row execute function public.set_updated_at();
-
--- Anon-callable existence check so the form can warn users before uploads.
-create or replace function public.utr_exists(p_utr text)
-returns boolean
-language sql
-security definer
-stable
-set search_path = public
-as $$
-  select exists(select 1 from public.players where utr_number = p_utr);
-$$;
-revoke all on function public.utr_exists(text) from public;
-grant execute on function public.utr_exists(text) to anon, authenticated;
 
 -- Phone-number deduplication. Last 10 digits become the canonical key,
 -- so "+91 9999912345" and "9999912345" collide as the same player.
@@ -114,7 +88,7 @@ grant execute on function public.phone_exists(text) to anon, authenticated;
 --   • Anonymous visitors (the registration form) may INSERT a new player row.
 --   • Nobody anonymous may read, update, or delete.
 --   • Authenticated users (admins logged in via Supabase Auth) may read all
---     rows and update the `status` (and other fields if needed).
+--     rows and manage player details.
 --
 -- For a stricter model you can layer an `admins` table check on top — see the
 -- commented-out "is_admin()" pattern at the bottom.
@@ -122,14 +96,32 @@ grant execute on function public.phone_exists(text) to anon, authenticated;
 alter table public.players enable row level security;
 
 drop policy if exists "players_insert_anon" on public.players;
-create policy "players_insert_anon"
-  on public.players
-  for insert
-  to anon, authenticated
-  with check (
-    -- Anyone submitting the form may only create rows in 'Pending' state
-    status = 'Pending'
+-- Public registrations cannot assign teams, sale results, or icon status.
+-- Check whichever auction columns exist, so this also works before migrations
+-- add them. Migration 0009 installs the same policy after those additions.
+do $$
+declare
+  registration_checks text;
+begin
+  select string_agg(check_sql, ' and ' order by ordinal)
+    into registration_checks
+  from (values
+    ('team_id', 'team_id is null', 1),
+    ('sold_price', 'sold_price is null', 2),
+    ('sold_at', 'sold_at is null', 3),
+    ('is_icon', 'is_icon = false', 4)
+  ) as checks(column_name, check_sql, ordinal)
+  where exists (
+    select 1 from information_schema.columns c
+    where c.table_schema = 'public' and c.table_name = 'players'
+      and c.column_name = checks.column_name
   );
+
+  execute format(
+    'create policy players_insert_anon on public.players for insert to anon, authenticated with check (%s)',
+    coalesce(registration_checks, 'true')
+  );
+end $$;
 
 drop policy if exists "players_select_authenticated" on public.players;
 create policy "players_select_authenticated"
@@ -156,20 +148,15 @@ create policy "players_delete_authenticated"
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Storage buckets
 --
--- Two buckets:
---   • profile-pictures   — public read (used in admin table thumbnails)
---   • payment-screenshots — PRIVATE; only authenticated users (admins) can read
+-- profile-pictures — public read (used in player thumbnails).
 --
--- Both allow anonymous INSERTs so the public registration form can upload.
+-- Allows anonymous INSERTs so the public registration form can upload.
 -- ─────────────────────────────────────────────────────────────────────────────
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values
   ('profile-pictures',    'profile-pictures',    true,
    5 * 1024 * 1024,
-   array['image/jpeg','image/png','image/webp','image/heic']),
-  ('payment-screenshots', 'payment-screenshots', false,
-   5 * 1024 * 1024,
-   array['image/jpeg','image/png','image/webp','image/heic','application/pdf'])
+   array['image/jpeg','image/png','image/webp','image/heic'])
 on conflict (id) do update
   set public             = excluded.public,
       file_size_limit    = excluded.file_size_limit,
@@ -190,20 +177,6 @@ create policy "profile_pictures_public_read"
   for select
   to anon, authenticated
   using (bucket_id = 'profile-pictures');
-
-drop policy if exists "payment_screenshots_anon_insert" on storage.objects;
-create policy "payment_screenshots_anon_insert"
-  on storage.objects
-  for insert
-  to anon, authenticated
-  with check (bucket_id = 'payment-screenshots');
-
-drop policy if exists "payment_screenshots_admin_read" on storage.objects;
-create policy "payment_screenshots_admin_read"
-  on storage.objects
-  for select
-  to authenticated
-  using (bucket_id = 'payment-screenshots');
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Optional stricter model: gate admin actions on membership in an `admins`

@@ -7,7 +7,6 @@
 // constraint requires. Interfaces have no implicit index signature.
 
 export type PlayerRole = "Batsman" | "Bowler" | "All-rounder";
-export type PlayerStatus = "Pending" | "Verified" | "Rejected";
 
 export type Player = {
   id: string;
@@ -16,10 +15,6 @@ export type Player = {
   phone: string | null;
   city: string;
   profile_picture_url: string | null;
-  payment_screenshot_url: string | null;
-  utr_number: string | null;
-  status: PlayerStatus;
-  paid_at: string | null;
   team_id: string | null;
   sold_price: number | null;
   sold_at: string | null;
@@ -83,10 +78,6 @@ export type PlayerInsert = {
   phone?: string | null;
   city: string;
   profile_picture_url?: string | null;
-  payment_screenshot_url?: string | null;
-  utr_number?: string | null;
-  status?: PlayerStatus;
-  paid_at?: string | null;
   team_id?: string | null;
   sold_price?: number | null;
   sold_at?: string | null;
@@ -121,10 +112,6 @@ export type Database = {
     };
     Views: Record<string, never>;
     Functions: {
-      utr_exists: {
-        Args: { p_utr: string };
-        Returns: boolean;
-      };
       phone_exists: {
         Args: { p_phone: string };
         Returns: boolean;
@@ -132,7 +119,6 @@ export type Database = {
     };
     Enums: {
       player_role: PlayerRole;
-      player_status: PlayerStatus;
     };
     CompositeTypes: Record<string, never>;
   };

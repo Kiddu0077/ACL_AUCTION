@@ -14,7 +14,6 @@ const COLUMNS = [
   "Role",
   "Phone",
   "City",
-  "Status",
   "Registered",
 ];
 
@@ -24,7 +23,6 @@ function asRows(players: Player[]) {
     p.role,
     p.phone ?? "",
     p.city,
-    p.status,
     new Date(p.created_at).toLocaleString(),
   ]);
 }

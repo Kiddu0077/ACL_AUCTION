@@ -51,7 +51,7 @@ export function SquadManager({
   }
 
   const available = players
-    .filter((p) => p.status !== "Rejected" && !p.team_id)
+    .filter((p) => !p.team_id)
     .sort((a, b) => a.full_name.localeCompare(b.full_name));
 
   return (

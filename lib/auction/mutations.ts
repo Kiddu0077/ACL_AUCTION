@@ -78,13 +78,13 @@ export async function selectAuctionPlayer(
 ): Promise<AuctionMutationResult> {
   const [stateResult, playerResult] = await Promise.all([
     supabase.from("auction_state").select("*").eq("id", "current").single(),
-    supabase.from("players").select("id, status, sold_at, team_id").eq("id", playerId).single(),
+    supabase.from("players").select("id, sold_at, team_id").eq("id", playerId).single(),
   ]);
   if (stateResult.error) return { error: stateResult.error.message };
   if (playerResult.error) return { error: playerResult.error.message };
   const state = stateResult.data;
   const player = playerResult.data;
-  if (player.status === "Rejected" || player.sold_at || player.team_id) {
+  if (player.sold_at || player.team_id) {
     return { error: "This player is no longer available in the auction pool" };
   }
   if (state.current_player_id === playerId) return { error: null, state };
@@ -133,7 +133,6 @@ export async function completePlayerSale(
     .eq("id", playerId)
     .is("sold_at", null)
     .is("team_id", null)
-    .neq("status", "Rejected")
     .select("*")
     .maybeSingle();
   if (error) return { error: error.message };
@@ -166,7 +165,6 @@ export async function completeUnsoldPlayer(
     .eq("id", playerId)
     .is("sold_at", null)
     .is("team_id", null)
-    .neq("status", "Rejected")
     .select("*")
     .maybeSingle();
   if (error) return { error: error.message };

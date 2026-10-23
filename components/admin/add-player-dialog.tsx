@@ -139,7 +139,7 @@ export function AddPlayerDialog() {
               <UserPlus className="h-5 w-5" /> Add player manually
             </DialogTitle>
             <DialogDescription>
-              Add a player directly to the pool with Verified status.
+              Add a player directly to the auction pool.
               Photo &amp; phone are optional for organizer entries.
             </DialogDescription>
           </DialogHeader>

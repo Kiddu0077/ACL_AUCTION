@@ -8,10 +8,23 @@
 -- post-auction follow-up tracking), and we can derive a boolean trivially.
 --
 -- Run once in Supabase SQL editor. Safe to re-run.
+-- Retired by 0009. Only legacy schemas with player approval status need this
+-- column; do not recreate it on the current schema or after removal.
 
-alter table public.players
-  add column if not exists paid_at timestamptz;
+do $$
+begin
+  if not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'players'
+      and column_name = 'status'
+  ) then
+    return;
+  end if;
 
-create index if not exists players_paid_at_idx
-  on public.players (paid_at)
-  where paid_at is not null;
+  alter table public.players
+    add column if not exists paid_at timestamptz;
+
+  create index if not exists players_paid_at_idx
+    on public.players (paid_at)
+    where paid_at is not null;
+end $$;

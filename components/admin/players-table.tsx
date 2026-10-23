@@ -27,13 +27,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
-import { StatusToggle } from "@/components/admin/status-toggle";
 import { DeleteButton } from "@/components/admin/delete-button";
 import { PlayerEditDialog } from "@/components/admin/player-edit-dialog";
-import type { Player, PlayerRole, PlayerStatus } from "@/lib/types/database";
+import type { Player, PlayerRole } from "@/lib/types/database";
 
 type RoleFilter = "all" | PlayerRole;
-type StatusFilter = "all" | PlayerStatus;
 type SaleFilter = "all" | "sold" | "unsold";
 type SortKey = "newest" | "oldest" | "name_asc" | "name_desc";
 
@@ -46,17 +44,14 @@ function StatPill({
 }: {
   label: string;
   value: number;
-  tone: "neutral" | "yellow" | "green" | "red" | "blue" | "orange";
+  tone: "neutral" | "green" | "blue";
   onClick?: () => void;
   active?: boolean;
 }) {
   const styles: Record<string, string> = {
     neutral: "bg-muted text-foreground",
-    yellow: "bg-yellow-100 text-yellow-800",
     green: "bg-emerald-100 text-emerald-800",
-    red: "bg-red-100 text-red-800",
     blue: "bg-blue-100 text-blue-800",
-    orange: "bg-orange-100 text-orange-800",
   };
   const baseCls = `flex flex-col rounded-md px-3 py-2 ${styles[tone]} ${
     onClick ? "cursor-pointer transition hover:brightness-95 active:scale-95" : ""
@@ -82,7 +77,6 @@ function StatPill({
 export function PlayersTable({ players }: { players: Player[] }) {
   const [query, setQuery] = React.useState("");
   const [role, setRole] = React.useState<RoleFilter>("all");
-  const [status, setStatus] = React.useState<StatusFilter>("all");
   const [sale, setSale] = React.useState<SaleFilter>("all");
   const [sort, setSort] = React.useState<SortKey>("newest");
 
@@ -90,10 +84,8 @@ export function PlayersTable({ players }: { players: Player[] }) {
   const stats = React.useMemo(() => {
     return {
       total: players.length,
-      pending: players.filter((p) => p.status === "Pending").length,
-      verified: players.filter((p) => p.status === "Verified").length,
-      rejected: players.filter((p) => p.status === "Rejected").length,
       sold: players.filter((p) => p.team_id).length,
+      unassigned: players.filter((p) => !p.team_id).length,
     };
   }, [players]);
 
@@ -101,7 +93,6 @@ export function PlayersTable({ players }: { players: Player[] }) {
     const q = query.trim().toLowerCase();
     let list = players.filter((p) => {
       if (role !== "all" && p.role !== role) return false;
-      if (status !== "all" && p.status !== status) return false;
       if (sale === "sold" && !p.team_id) return false;
       if (sale === "unsold" && p.team_id) return false;
       if (q) {
@@ -125,78 +116,46 @@ export function PlayersTable({ players }: { players: Player[] }) {
     });
 
     return list;
-  }, [players, query, role, status, sale, sort]);
+  }, [players, query, role, sale, sort]);
 
   const filtersActive =
-    query !== "" || role !== "all" || status !== "all" || sale !== "all";
+    query !== "" || role !== "all" || sale !== "all";
 
   function clearFilters() {
     setQuery("");
     setRole("all");
-    setStatus("all");
     setSale("all");
   }
 
   return (
     <>
       {/* Stats — click to filter */}
-      <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
+      <div className="mb-4 grid grid-cols-3 gap-2">
         <StatPill
           label="Total"
           value={stats.total}
           tone="neutral"
-          onClick={() => {
-            setStatus("all");
-            setRole("all");
-            setSale("all");
-            setQuery("");
-          }}
-        />
-        <StatPill
-          label="Pending"
-          value={stats.pending}
-          tone="yellow"
-          onClick={() => {
-            setStatus("Pending");
-            setSale("all");
-          }}
-          active={status === "Pending"}
-        />
-        <StatPill
-          label="Verified"
-          value={stats.verified}
-          tone="green"
-          onClick={() => {
-            setStatus("Verified");
-            setSale("all");
-          }}
-          active={status === "Verified"}
-        />
-        <StatPill
-          label="Rejected"
-          value={stats.rejected}
-          tone="red"
-          onClick={() => {
-            setStatus("Rejected");
-            setSale("all");
-          }}
-          active={status === "Rejected"}
+          onClick={clearFilters}
         />
         <StatPill
           label="Sold"
           value={stats.sold}
           tone="blue"
-          onClick={() => {
-            setSale("sold");
-            setStatus("all");
-          }}
+          onClick={() => setSale("sold")}
           active={sale === "sold"}
+        />
+        <StatPill
+          label="Unassigned"
+          value={stats.unassigned}
+          tone="green"
+          onClick={() => setSale("unsold")}
+          active={sale === "unsold"}
         />
       </div>
 
       {/* Filters */}
       <Card className="mb-4">
-        <CardContent className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-[1fr_auto_auto_auto_auto_auto]">
+        <CardContent className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-[1fr_auto_auto_auto_auto]">
           <div className="relative">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
@@ -217,20 +176,6 @@ export function PlayersTable({ players }: { players: Player[] }) {
               <SelectItem value="All-rounder">All-rounder</SelectItem>
             </SelectContent>
           </Select>
-          <Select
-            value={status}
-            onValueChange={(v) => setStatus(v as StatusFilter)}
-          >
-            <SelectTrigger className="h-9 w-full sm:w-36">
-              <SelectValue placeholder="Status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All status</SelectItem>
-              <SelectItem value="Pending">Pending</SelectItem>
-              <SelectItem value="Verified">Verified</SelectItem>
-              <SelectItem value="Rejected">Rejected</SelectItem>
-            </SelectContent>
-          </Select>
           <Select value={sale} onValueChange={(v) => setSale(v as SaleFilter)}>
             <SelectTrigger className="h-9 w-full sm:w-36">
               <SelectValue placeholder="Sale" />
@@ -238,7 +183,7 @@ export function PlayersTable({ players }: { players: Player[] }) {
             <SelectContent>
               <SelectItem value="all">All players</SelectItem>
               <SelectItem value="sold">Sold (in a team)</SelectItem>
-              <SelectItem value="unsold">Unsold / available</SelectItem>
+              <SelectItem value="unsold">Unassigned players</SelectItem>
             </SelectContent>
           </Select>
           <Select value={sort} onValueChange={(v) => setSort(v as SortKey)}>
@@ -285,7 +230,6 @@ export function PlayersTable({ players }: { players: Player[] }) {
                 <TableHead>Phone</TableHead>
                 <TableHead>City</TableHead>
                 <TableHead>Registered</TableHead>
-                <TableHead>Status</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -293,7 +237,7 @@ export function PlayersTable({ players }: { players: Player[] }) {
               {filtered.length === 0 && (
                 <TableRow>
                   <TableCell
-                    colSpan={8}
+                    colSpan={7}
                     className="py-10 text-center text-sm text-muted-foreground"
                   >
                     {players.length === 0
@@ -332,13 +276,6 @@ export function PlayersTable({ players }: { players: Player[] }) {
                   <TableCell>{p.city}</TableCell>
                   <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                     {new Date(p.created_at).toLocaleDateString()}
-                  </TableCell>
-                  <TableCell>
-                    <StatusToggle
-                      id={p.id}
-                      status={p.status}
-                      name={p.full_name}
-                    />
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end">

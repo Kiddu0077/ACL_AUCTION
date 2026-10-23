@@ -14,8 +14,8 @@ function fixture({ beforeUpdate, beforeRead } = {}) {
   const db = {
     auction_state: [{ id: "current", current_player_id: "player-a", current_bid: 100, base_price: 100, current_bidder_team_id: null, updated_at: "initial" }],
     players: [
-      { id: "player-a", status: "Verified", sold_at: null, team_id: null, sold_price: null, updated_at: "initial" },
-      { id: "player-b", status: "Verified", sold_at: null, team_id: null, sold_price: null, updated_at: "initial" },
+      { id: "player-a", sold_at: null, team_id: null, sold_price: null, updated_at: "initial" },
+      { id: "player-b", sold_at: null, team_id: null, sold_price: null, updated_at: "initial" },
     ],
     teams: [{ id: "team-a", budget_total: 1000, squad_size: 2, is_locked: false }],
   };
@@ -106,18 +106,59 @@ test("competing selections cannot silently replace the current player", async ()
   assert.equal(winner.state.current_bid, 100);
 });
 
+test("registered players can be selected and sold without a verification status", async () => {
+  for (const legacyStatus of [undefined, "Pending", "Rejected"]) {
+    const { db, client } = fixture();
+    if (legacyStatus) db.players[0].status = legacyStatus;
+    db.auction_state[0].current_player_id = null;
+    const selection = await selectAuctionPlayer(client, "player-a");
+    assert.equal(selection.error, null, legacyStatus);
+    assert.equal(selection.state.current_player_id, "player-a");
+    const sale = await completePlayerSale(client, "player-a", "team-a", 300);
+    assert.equal(sale.error, null, legacyStatus);
+    assert.equal(sale.player.team_id, "team-a");
+    assert.equal(sale.player.sold_price, 300);
+  }
+});
+
+test("registered players can be marked unsold regardless of legacy verification status", async () => {
+  for (const legacyStatus of [undefined, "Pending", "Rejected"]) {
+    const { db, client } = fixture();
+    if (legacyStatus) db.players[0].status = legacyStatus;
+    const result = await completeUnsoldPlayer(client, "player-a");
+    assert.equal(result.error, null, legacyStatus);
+    assert.ok(result.player.sold_at);
+    assert.equal(result.player.team_id, null);
+    assert.equal(result.state.current_player_id, null);
+  }
+});
+
 test("sale eligibility is checked before any write", async () => {
-  for (const scenario of ["locked", "full", "over-budget", "wrong-block", "rejected"]) {
+  for (const scenario of ["locked", "full", "over-budget", "wrong-block", "already-auctioned", "assigned"]) {
     const { db, client } = fixture();
     if (scenario === "locked") db.teams[0].is_locked = true;
     if (scenario === "full") db.teams[0].squad_size = 0;
     if (scenario === "over-budget") db.teams[0].budget_total = 200;
     if (scenario === "wrong-block") db.auction_state[0].current_player_id = "player-b";
-    if (scenario === "rejected") db.players[0].status = "Rejected";
+    if (scenario === "already-auctioned") db.players[0].sold_at = "previous-auction";
+    if (scenario === "assigned") db.players[0].team_id = "team-a";
     const before = structuredClone(db);
     const result = await completePlayerSale(client, "player-a", "team-a", 300);
     assert.ok(result.error, scenario);
     assert.deepEqual(db, before, scenario);
+  }
+});
+
+test("selection and unsold preserve players already auctioned or assigned", async () => {
+  for (const patch of [{ sold_at: "previous-auction" }, { team_id: "team-a" }]) {
+    for (const operation of [selectAuctionPlayer, completeUnsoldPlayer]) {
+      const { db, client } = fixture();
+      Object.assign(db.players[0], patch);
+      const before = structuredClone(db);
+      const result = await operation(client, "player-a");
+      assert.ok(result.error);
+      assert.deepEqual(db, before);
+    }
   }
 });
 

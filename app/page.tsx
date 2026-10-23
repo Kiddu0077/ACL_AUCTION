@@ -37,7 +37,7 @@ export default function Home() {
               <Link href={REGISTRATION_PATH} className="group inline-flex min-h-14 items-center justify-center gap-6 rounded-full bg-[#d7f568] px-7 py-4 text-sm font-extrabold text-[#103c32] transition hover:bg-[#e3ff8a] hover:shadow-lg">Register as a player <ArrowUpRight className="h-5 w-5 transition group-hover:-translate-y-0.5 group-hover:translate-x-0.5" /></Link>
               <Link href="#league" className="inline-flex min-h-12 items-center gap-2 px-2 text-sm font-semibold text-white/85 transition hover:text-[#d7f568]">Explore the league <ArrowDown className="h-4 w-4" /></Link>
             </div>
-            <p className="mt-5 text-xs text-[#b6c9be]">Register now. Entry fee is collected after the auction.</p>
+            <p className="mt-5 text-xs text-[#b6c9be]">Register now and join the player pool.</p>
           </div>
 
           <div className="relative mx-auto w-full max-w-[470px] py-5 lg:py-0">

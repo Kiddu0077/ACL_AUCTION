@@ -62,7 +62,7 @@ export function DeleteButton({
           <DialogTitle>Delete {name}?</DialogTitle>
           <DialogDescription>
             This permanently removes the registration and the player&apos;s profile
-            photo and any payment screenshot from storage. This cannot be
+            photo from storage. This cannot be
             undone.
           </DialogDescription>
         </DialogHeader>

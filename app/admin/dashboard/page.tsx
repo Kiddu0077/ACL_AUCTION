@@ -33,7 +33,7 @@ export default async function AdminDashboardPage() {
               Admin Dashboard
             </h1>
             <p className="text-xs text-muted-foreground">
-              Manage registrations, track payments, export reports.
+              Manage registrations and export reports.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">

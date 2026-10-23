@@ -3,8 +3,8 @@ import test from "node:test";
 import JSZip from "jszip";
 import { prepareExportPhoto } from "../lib/prepare-export-photo.ts";
 
-const columns = ["Full name", "Role", "Phone", "City", "Status", "Registered"];
-const rows = [["Test Player", "Bowler", "+91 90000 00000", "Pudur", "Pending", "21/10/2026"]];
+const columns = ["Full name", "Role", "Phone", "City", "Registered"];
+const rows = [["Test Player", "Bowler", "+91 90000 00000", "Pudur", "21/10/2026"]];
 
 test("installed PDF libraries support the production text, table and document APIs", async () => {
   const { jsPDF } = await import("jspdf");

@@ -17,7 +17,7 @@ nextEnv.loadEnvConfig(process.cwd());
 const PROJECT = "dicgutkvjiccetbvbxjd";
 const EXPECTED_PLAYERS = 154;
 const EXPECTED_TEAMS = 12;
-const BUCKETS = ["profile-pictures", "payment-screenshots"];
+const BUCKETS = ["profile-pictures"];
 const args = process.argv.slice(2);
 const apply = args.includes("--apply");
 const option = (name) => {

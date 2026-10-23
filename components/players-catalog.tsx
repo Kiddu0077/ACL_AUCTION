@@ -51,7 +51,6 @@ export function PlayersCatalog({
   const visible = React.useMemo(() => {
     const q = query.trim().toLowerCase();
     return players
-      .filter((p) => p.status !== "Rejected")
       // Icon players are pre-assigned marquee picks — not part of the
       // public auction pool. Hide them from this catalog entirely.
       .filter((p) => !p.is_icon)
@@ -70,9 +69,7 @@ export function PlayersCatalog({
 
   const counts = React.useMemo(() => {
     // Also exclude icons here so the counters match the visible list
-    const pool = players.filter(
-      (p) => p.status !== "Rejected" && !p.is_icon,
-    );
+    const pool = players.filter((p) => !p.is_icon);
     return {
       total: pool.length,
       available: pool.filter((p) => !p.sold_at && !p.team_id).length,

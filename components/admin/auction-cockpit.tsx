@@ -202,13 +202,12 @@ export function AuctionCockpit({
     return m;
   }, [players]);
 
-  // Pool: not Rejected, not sold, not currently on block
+  // Pool: not sold, not assigned, not currently on block
   const pool = React.useMemo(() => {
     const q = query.trim().toLowerCase();
     return players
       .filter(
         (p) =>
-          p.status !== "Rejected" &&
           !p.is_icon &&
           !p.team_id &&
           !p.sold_at &&
@@ -227,7 +226,6 @@ export function AuctionCockpit({
     () =>
       players.filter(
         (p) =>
-          p.status !== "Rejected" &&
           !p.is_icon &&
           !p.team_id &&
           !p.sold_at &&
@@ -247,7 +245,7 @@ export function AuctionCockpit({
 
   const unsoldCount = React.useMemo(
     () =>
-      players.filter((p) => p.status !== "Rejected" && p.sold_at && !p.team_id)
+      players.filter((p) => p.sold_at && !p.team_id)
         .length,
     [players],
   );
@@ -364,7 +362,7 @@ export function AuctionCockpit({
   function doRepoolUnsold() {
     if (!unsoldCount || blocked) return;
     mutate(
-      (data) => ({ ...data, players: data.players.map((p) => p.status !== "Rejected" && p.sold_at && !p.team_id ? { ...p, sold_at: null } : p) }),
+      (data) => ({ ...data, players: data.players.map((p) => p.sold_at && !p.team_id ? { ...p, sold_at: null } : p) }),
       () => repoolUnsold(),
       (result) => {
         broadcastReload();
@@ -725,11 +723,6 @@ export function AuctionCockpit({
                     {p.is_icon && (
                       <span className="rounded bg-gradient-to-r from-yellow-400 to-amber-500 px-1.5 py-0.5 text-[10px] font-bold uppercase text-cricket-pitch">
                         ★ Icon
-                      </span>
-                    )}
-                    {p.status === "Pending" && (
-                      <span className="rounded bg-yellow-100 px-1.5 py-0.5 text-[10px] font-semibold text-yellow-800">
-                        Pending
                       </span>
                     )}
                   </button>

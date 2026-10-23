@@ -52,7 +52,7 @@ export function AllTeamsBoard({
   const unsold = React.useMemo(
     () =>
       players
-        .filter((p) => !p.team_id && p.status !== "Rejected")
+        .filter((p) => !p.team_id)
         .sort((a, b) => a.full_name.localeCompare(b.full_name)),
     [players],
   );
